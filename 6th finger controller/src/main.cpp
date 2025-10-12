@@ -1,12 +1,12 @@
 #include <Arduino.h>
 #include <ESP32Servo.h>
+#include "telemetry_ble.h"
 
-const int fsrPin = 34;   // D34, датчик давления
-const int flexPin = 35;  // D35, датчик изгиба
-const int motorPin = 25; // D25, вибромотор
-const int servoPin = 18; // D18, сервопривод
+const int fsrPin = 34;   // ADC, датчик давления
+const int flexPin = 35;  // ADC, датчик изгиба
+const int motorPin = 25; // вибромотор
+const int servoPin = 18; // сервопривод
 
-// Параметры FSR
 int fsrReading;
 float fsrVoltage;
 float fsrResistance;
@@ -21,12 +21,10 @@ const float R_DIV = 47000.0f; // pullup 47 кОм
 const float flatResistance = 45000.0f;
 const float bendResistance = 33400.0f;
 
-// Серва
 Servo myServo;
 const int minAngle = 40;
 const int maxAngle = 180;
 
-// Сглаживание
 float angle = 0;
 const int numReadings = 10;
 float readings[numReadings];
@@ -36,6 +34,9 @@ float average = 0;
 
 unsigned long lastPulseTime = 0;
 bool motorState = false;
+
+TelemetryBLE ble;
+TelemetryValues tv{};
 
 static inline float fmap(float x, float in_min, float in_max, float out_min, float out_max)
 {
@@ -58,15 +59,15 @@ void setup()
   myServo.attach(servoPin, 500, 2500);
 
   for (int i = 0; i < numReadings; i++)
-  {
     readings[i] = 0;
-  }
 
   angle = minAngle;
   myServo.write(angle);
+
+  ble.begin("ESP32-Flex6");
 }
 
-void loop()
+void handleFSR()
 {
   fsrReading = analogRead(fsrPin);
   fsrVoltage = (fsrReading * VCC_MV) / 4095.0f;
@@ -79,15 +80,10 @@ void loop()
   {
     fsrResistance = (VCC_MV - fsrVoltage) * R_PULL / fsrVoltage;
     fsrConductance = 1000000.0f / fsrResistance;
-
     if (fsrConductance <= 1000.0f)
-    {
       fsrForce = fsrConductance / 80.0f;
-    }
     else
-    {
       fsrForce = (fsrConductance - 1000.0f) / 30.0f;
-    }
   }
 
   if (fsrForce < 0)
@@ -112,20 +108,20 @@ void loop()
       digitalWrite(motorPin, LOW);
       motorState = false;
     }
-
-    Serial.print("FSR Force (N): ");
-    Serial.print(fsrForce, 1);
-    Serial.print(" , Interval: ");
-    Serial.println(pulseInterval);
   }
   else
   {
     digitalWrite(motorPin, LOW);
     motorState = false;
   }
+}
 
+void handleFlexAndServo()
+{
   int ADCflex = analogRead(flexPin);
   float Vflex = ADCflex * VCC / 4095.0f;
+  if (Vflex < 0.001f)
+    Vflex = 0.001f;
 
   float Rflex = R_DIV * (VCC / Vflex - 1.0f);
 
@@ -142,13 +138,35 @@ void loop()
   {
     angle = newAngle;
     myServo.write((int)angle);
+  }
+}
 
-    Serial.print("Flex R: ");
+void sendTelemetryIfNeeded()
+{
+  tv.flex_avg_ohm = average;
+  tv.servo_deg = angle;
+  ble.setValues(tv);
+  ble.loop();
+}
+
+void loop()
+{
+  handleFSR();
+  handleFlexAndServo();
+  sendTelemetryIfNeeded();
+
+  static uint32_t lastLog = 0;
+  const uint32_t now = millis();
+  if (now - lastLog >= 100)
+  {
+    lastLog = now;
+    Serial.print("Flex R avg: ");
     Serial.print(average, 0);
-    Serial.print(" ohm , Servo: ");
+    Serial.print(" ohm, Servo: ");
     Serial.print(angle, 0);
-    Serial.println(" deg");
+    Serial.print(" deg, FSR force: ");
+    Serial.println(fsrForce, 1);
   }
 
-  delay(10);
+  delay(5);
 }
