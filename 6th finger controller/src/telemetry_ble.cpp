@@ -5,47 +5,85 @@ namespace
     class ServerCallbacks : public NimBLEServerCallbacks
     {
     public:
-        explicit ServerCallbacks(bool *flag) : connectedFlag(flag) {}
-        void onConnect(NimBLEServer *pServer) override
+        explicit ServerCallbacks(TelemetryBLE *owner) : owner_(owner) {}
+        void onConnect(NimBLEServer *) override
         {
-            if (connectedFlag)
-                *connectedFlag = true;
+            if (owner_)
+                owner_->onConnect();
         }
-        void onDisconnect(NimBLEServer *pServer) override
+        void onDisconnect(NimBLEServer *) override
         {
-            if (connectedFlag)
-                *connectedFlag = false;
+            if (owner_)
+                owner_->onDisconnect();
             NimBLEDevice::startAdvertising();
         }
 
     private:
-        bool *connectedFlag;
+        TelemetryBLE *owner_;
     };
 } // namespace
 
-void TelemetryBLE::begin(const char *deviceName)
+void TelemetryBLE::setLed(bool on)
 {
-    createGatt(deviceName);
+    static bool inited = false;
+    if (!inited)
+    {
+        inited = true;
+        pinMode(BLE_LED_PIN, OUTPUT);
+    }
+    digitalWrite(BLE_LED_PIN, on ? HIGH : LOW);
 }
+
+void TelemetryBLE::updateLed()
+{
+    const uint32_t now = millis();
+    switch (ledMode)
+    {
+    case LedMode::Advertising:
+        if (now - lastBlink >= 800)
+        {
+            lastBlink = now;
+            setLed(true);
+            delay(30);
+            setLed(false);
+        }
+        break;
+    case LedMode::Connected:
+        setLed(true);
+        break;
+    case LedMode::Notifying:
+        if (now - lastBlink >= 200)
+        {
+            lastBlink = now;
+            setLed(true);
+            delay(15);
+            setLed(false);
+        }
+        break;
+    }
+}
+
+void TelemetryBLE::begin(const char *deviceName) { createGatt(deviceName); }
 
 void TelemetryBLE::createGatt(const char *deviceName)
 {
+    pinMode(BLE_LED_PIN, OUTPUT);
+    setLed(false);
+    ledMode = LedMode::Advertising;
+
     NimBLEDevice::init(deviceName);
     NimBLEDevice::setPower(ESP_PWR_LVL_P7);
     NimBLEDevice::setSecurityAuth(false, false, false);
 
     server = NimBLEDevice::createServer();
-    server->setCallbacks(new ServerCallbacks(&clientConnected));
+    server->setCallbacks(new ServerCallbacks(this));
 
     service = server->createService(SERVICE_UUID);
 
     chFlex = service->createCharacteristic(
-        FLEX_UUID,
-        NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::NOTIFY);
-
+        FLEX_UUID, NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::NOTIFY);
     chServo = service->createCharacteristic(
-        SERVO_UUID,
-        NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::NOTIFY);
+        SERVO_UUID, NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::NOTIFY);
 
     uint8_t zeros[4] = {0, 0, 0, 0};
     chFlex->setValue(zeros, 4);
@@ -53,7 +91,7 @@ void TelemetryBLE::createGatt(const char *deviceName)
 
     service->start();
 
-    NimBLEAdvertising *adv = NimBLEDevice::getAdvertising();
+    auto *adv = NimBLEDevice::getAdvertising();
     adv->addServiceUUID(SERVICE_UUID);
     adv->setScanResponse(true);
     adv->start();
@@ -73,12 +111,24 @@ void TelemetryBLE::setValues(const TelemetryValues &v)
 
 void TelemetryBLE::floatToLE(float f, uint8_t out[4])
 {
-    static_assert(sizeof(float) == 4, "This code assumes 32-bit float");
     memcpy(out, &f, 4);
+}
+
+void TelemetryBLE::onConnect()
+{
+    clientConnected = true;
+    ledMode = LedMode::Connected;
+}
+void TelemetryBLE::onDisconnect()
+{
+    clientConnected = false;
+    ledMode = LedMode::Advertising;
 }
 
 void TelemetryBLE::loop()
 {
+    updateLed();
+
     if (!havePending)
         return;
     const uint32_t now = millis();
@@ -90,6 +140,7 @@ void TelemetryBLE::loop()
 
     if (!needSend)
         return;
+
     if (!hasSubscribers())
     {
         uint8_t buf[4];
@@ -100,6 +151,7 @@ void TelemetryBLE::loop()
         lastSent = pending;
         lastNotifyMs = now;
         havePending = false;
+        ledMode = clientConnected ? LedMode::Connected : LedMode::Advertising;
         return;
     }
 
@@ -107,7 +159,6 @@ void TelemetryBLE::loop()
     floatToLE(pending.flex_avg_ohm, b);
     chFlex->setValue(b, 4);
     chFlex->notify();
-
     floatToLE(pending.servo_deg, b);
     chServo->setValue(b, 4);
     chServo->notify();
@@ -115,4 +166,5 @@ void TelemetryBLE::loop()
     lastSent = pending;
     lastNotifyMs = now;
     havePending = false;
+    ledMode = LedMode::Notifying;
 }
