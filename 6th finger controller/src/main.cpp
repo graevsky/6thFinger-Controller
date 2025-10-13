@@ -1,42 +1,15 @@
 #include <Arduino.h>
 #include <ESP32Servo.h>
-#include "telemetry_ble.h"
+#include "ble_app.h"
 
-const int fsrPin = 34;   // ADC, датчик давления
-const int flexPin = 35;  // ADC, датчик изгиба
-const int motorPin = 25; // вибромотор
-const int servoPin = 18; // сервопривод
+BleApp ble;
+Servo servo;
 
-int fsrReading;
-float fsrVoltage;
-float fsrResistance;
-float fsrConductance;
-float fsrForce;
-
-const float VCC_MV = 3300.0f;
-const float R_PULL = 4700.0f;
-
-const float VCC = 3.3f;
-const float R_DIV = 47000.0f; // pullup 47 кОм
-const float flatResistance = 45000.0f;
-const float bendResistance = 33400.0f;
-
-Servo myServo;
-const int minAngle = 40;
-const int maxAngle = 180;
-
-float angle = 0;
-const int numReadings = 10;
-float readings[numReadings];
-int readIndex = 0;
-float total = 0;
-float average = 0;
-
-unsigned long lastPulseTime = 0;
-bool motorState = false;
-
-TelemetryBLE ble;
-TelemetryValues tv{};
+static const int SAMPLES = 10;
+float ring[SAMPLES];
+int ridx = 0;
+float sum = 0, avg = 0;
+float angle = 0.f;
 
 static inline float fmap(float x, float in_min, float in_max, float out_min, float out_max)
 {
@@ -45,127 +18,123 @@ static inline float fmap(float x, float in_min, float in_max, float out_min, flo
   return (x - in_min) * (out_max - out_min) / (in_max - in_min) + out_min;
 }
 
+static void vibroPulse(uint8_t pin, uint16_t freqHz, uint8_t powerPct, bool enabled)
+{
+  static unsigned long t0 = 0;
+  static bool phase = false;
+  if (!enabled)
+  {
+    digitalWrite(pin, LOW);
+    phase = false;
+    return;
+  }
+  const unsigned long now = millis();
+  uint16_t period = max<uint16_t>(5, 1000u / max<uint16_t>(1, freqHz));
+  uint16_t onMs = (uint16_t)((period * powerPct) / 100);
+  if (now - t0 >= (phase ? onMs : (period - onMs)))
+  {
+    phase = !phase;
+    t0 = now;
+    digitalWrite(pin, phase ? HIGH : LOW);
+  }
+}
+
+static float adcToOhm(uint16_t adc, float vcc, uint32_t pullup)
+{
+  float v = adc * (vcc / 4095.0f);
+  if (v < 0.001f)
+    v = 0.001f;
+  return pullup * (vcc / v - 1.0f);
+}
+
+static void reconfigureHW(const Settings &s)
+{
+  analogReadResolution(12);
+  analogSetPinAttenuation(s.fsrPin, ADC_11db);
+  analogSetPinAttenuation(s.flexPin, ADC_11db);
+
+  pinMode(s.vibroPin, OUTPUT);
+  digitalWrite(s.vibroPin, LOW);
+
+  servo.detach();
+  servo.setPeriodHertz(50);
+  servo.attach(s.servoPin, 500, 2500);
+  angle = s.servoManual ? s.servoManualDeg : s.servoMinDeg;
+  servo.write((int)angle);
+
+  sum = 0;
+  ridx = 0;
+  for (int i = 0; i < SAMPLES; i++)
+    ring[i] = 0;
+}
+
 void setup()
 {
   Serial.begin(115200);
-  analogReadResolution(12);
-  analogSetPinAttenuation(fsrPin, ADC_11db);
-  analogSetPinAttenuation(flexPin, ADC_11db);
-
-  pinMode(motorPin, OUTPUT);
-  digitalWrite(motorPin, LOW);
-
-  myServo.setPeriodHertz(50);
-  myServo.attach(servoPin, 500, 2500);
-
-  for (int i = 0; i < numReadings; i++)
-    readings[i] = 0;
-
-  angle = minAngle;
-  myServo.write(angle);
-
   ble.begin("ESP32-Flex6");
-}
-
-void handleFSR()
-{
-  fsrReading = analogRead(fsrPin);
-  fsrVoltage = (fsrReading * VCC_MV) / 4095.0f;
-
-  if (fsrVoltage <= 1.0f)
-  {
-    fsrForce = 0;
-  }
-  else
-  {
-    fsrResistance = (VCC_MV - fsrVoltage) * R_PULL / fsrVoltage;
-    fsrConductance = 1000000.0f / fsrResistance;
-    if (fsrConductance <= 1000.0f)
-      fsrForce = fsrConductance / 80.0f;
-    else
-      fsrForce = (fsrConductance - 1000.0f) / 30.0f;
-  }
-
-  if (fsrForce < 0)
-    fsrForce = 0;
-  if (fsrForce > 450)
-    fsrForce = 450;
-
-  if (fsrForce > 0)
-  {
-    int pulseInterval = (int)fmap(fsrForce, 0, 450, 1000, 50);
-    unsigned long now = millis();
-
-    if (!motorState && (now - lastPulseTime > (unsigned long)pulseInterval))
-    {
-      digitalWrite(motorPin, HIGH);
-      motorState = true;
-      lastPulseTime = now;
-    }
-
-    if (motorState && (now - lastPulseTime > 100UL))
-    {
-      digitalWrite(motorPin, LOW);
-      motorState = false;
-    }
-  }
-  else
-  {
-    digitalWrite(motorPin, LOW);
-    motorState = false;
-  }
-}
-
-void handleFlexAndServo()
-{
-  int ADCflex = analogRead(flexPin);
-  float Vflex = ADCflex * VCC / 4095.0f;
-  if (Vflex < 0.001f)
-    Vflex = 0.001f;
-
-  float Rflex = R_DIV * (VCC / Vflex - 1.0f);
-
-  total -= readings[readIndex];
-  readings[readIndex] = Rflex;
-  total += readings[readIndex];
-  readIndex = (readIndex + 1) % numReadings;
-  average = total / numReadings;
-
-  float newAngle = fmap(average, flatResistance, bendResistance, minAngle, maxAngle);
-  newAngle = constrain(newAngle, (float)minAngle, (float)maxAngle);
-
-  if (fabsf(newAngle - angle) > 2.0f)
-  {
-    angle = newAngle;
-    myServo.write((int)angle);
-  }
-}
-
-void sendTelemetryIfNeeded()
-{
-  tv.flex_avg_ohm = average;
-  tv.servo_deg = angle;
-  ble.setValues(tv);
-  ble.loop();
+  ble.onReconfigure = reconfigureHW;
+  reconfigureHW(ble.getSettings());
 }
 
 void loop()
 {
-  handleFSR();
-  handleFlexAndServo();
-  sendTelemetryIfNeeded();
+  const Settings &s = ble.getSettings();
+
+  digitalWrite(s.vibroPin, LOW);
+
+  const float VCC = 3.3f;
+  uint16_t fsrAdc = analogRead(s.fsrPin);
+  float Rfsr = adcToOhm(fsrAdc, VCC, s.fsrPullupOhm);
+
+  const float R_PULLUP_FLEX = 47000.0f;
+  uint16_t flexAdc = analogRead(s.flexPin);
+  float Rflex = adcToOhm(flexAdc, VCC, (uint32_t)R_PULLUP_FLEX);
+
+  bool hardPress = (Rfsr <= (float)s.fsrMaxOhm);
+  bool softPress = (Rfsr <= (float)s.fsrStartOhm) && !hardPress;
+  bool fsrActive = hardPress || softPress;
+
+  if (!fsrActive)
+  {
+    sum -= ring[ridx];
+    ring[ridx] = Rflex;
+    sum += ring[ridx];
+    ridx = (ridx + 1) % SAMPLES;
+    avg = sum / SAMPLES;
+
+    float minA = s.servoMinDeg, maxA = s.servoMaxDeg;
+    float target = s.servoManual ? s.servoManualDeg
+                                 : constrain(fmap(avg, s.flexFlatOhm, s.flexBendOhm, minA, maxA), minA, maxA);
+
+    if (fabsf(target - angle) > 2.0f)
+    {
+      angle = target;
+      servo.write((int)angle);
+    }
+  }
+
+  if (hardPress)
+  {
+    digitalWrite(s.vibroPin, HIGH);
+  }
+  else
+  {
+    vibroPulse(s.vibroPin, s.vibroFreqHz, s.vibroPowerPct, softPress);
+  }
+
+  TelemetryValues tv{};
+  tv.fsr_ohm = Rfsr;
+  tv.flex_avg_ohm = avg;
+  tv.servo_deg = angle;
+  ble.setTelemetry(tv);
+  ble.loop();
 
   static uint32_t lastLog = 0;
-  const uint32_t now = millis();
+  uint32_t now = millis();
   if (now - lastLog >= 100)
   {
     lastLog = now;
-    Serial.print("Flex R avg: ");
-    Serial.print(average, 0);
-    Serial.print(" ohm, Servo: ");
-    Serial.print(angle, 0);
-    Serial.print(" deg, FSR force: ");
-    Serial.println(fsrForce, 1);
+    Serial.printf("FSR: %.0f Ω, Flex avg: %.0f Ω, Servo: %.0f°\n", Rfsr, avg, angle);
   }
 
   delay(5);
