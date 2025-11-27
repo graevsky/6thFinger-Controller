@@ -34,10 +34,29 @@ void loop()
 {
 
     ctrl.update();
+    {
+        const ControlTelemetry &t = ctrl.getTelemetry();
+
+        Serial.printf(
+            "FLEX raw: %.0f Ω | filt: %.0f Ω | "
+            "FSR raw: %.0f Ω | filt: %.0f Ω | Force: %.2f N | "
+            "Servo: tgt %.1f° cur %.1f° spd %.1f°/s | "
+            "Vib: duty %u mode %u\n",
+            t.flexRawOhm,
+            t.flexFilteredOhm,
+            t.fsrRawOhm,
+            t.fsrFilteredOhm,
+            t.fsrForceN,
+            t.servoTargetDeg,
+            t.servoCurrentDeg,
+            t.servoSpeedDps,
+            t.vibroDuty,
+            (uint8_t)t.vibroMode);
+    }
 
     ble.sendTelemetry(ctrl.getTelemetry());
 
     ble.loop();
 
-    delay(5);
+    delay(50);
 }

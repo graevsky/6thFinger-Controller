@@ -1,4 +1,5 @@
 #include "control.h"
+static const int VIBRO_CHANNEL = 4;
 
 float Control::smooth(float prev, float cur, float alpha)
 {
@@ -160,7 +161,7 @@ void Control::updateVibro(uint8_t duty)
     tele.vibroActive = duty > 0;
     tele.vibroMode = current.vibroMode;
 
-    ledcWrite(0, duty);
+    ledcWrite(VIBRO_CHANNEL, duty);
 }
 
 void Control::setupHardware()
@@ -170,9 +171,10 @@ void Control::setupHardware()
     analogSetAttenuation(ADC_11db);
 
     pinMode(current.vibroPin, OUTPUT);
-    ledcSetup(0, current.vibroFreqHz, 8);
-    ledcAttachPin(current.vibroPin, 0);
-    ledcWrite(0, 0);
+    ledcSetup(VIBRO_CHANNEL, current.vibroFreqHz, 8);
+    ledcAttachPin(current.vibroPin, VIBRO_CHANNEL);
+    
+    ledcWrite(VIBRO_CHANNEL, 0);
 
     servo.detach();
     servoAngleDeg = current.servoMaxDeg;
