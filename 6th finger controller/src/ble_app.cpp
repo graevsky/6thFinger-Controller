@@ -244,15 +244,15 @@ void BleApp::sendJsonChunked(const JsonDocument &doc, NimBLECharacteristic *ch)
 {
     String payload;
     serializeJson(doc, payload);
-
-    const int CH = 100;
+    const int CH = 18;
 
     ch->setValue("[BEGIN]");
     ch->notify();
 
     for (int i = 0; i < payload.length(); i += CH)
     {
-        ch->setValue(payload.substring(i, i + CH).c_str());
+        String part = payload.substring(i, i + CH);
+        ch->setValue(part);
         ch->notify();
     }
 
@@ -279,6 +279,22 @@ void BleApp::makeTelemetryJson(const ControlTelemetry &t)
     teleJson["vibro_mode"] = (uint8_t)t.vibroMode;
 }
 
+// void BleApp::makeTelemetryJson(const ControlTelemetry &)
+// {
+//     teleJson.clear();
+//     teleJson["flex_raw"] = 12345;
+//     teleJson["flex_filt"] = 23456;
+//     teleJson["fsr_raw"] = 34567;
+//     teleJson["fsr_filt"] = 45678;
+//     teleJson["forceN"] = 9.99f;
+
+//     teleJson["servo_target"] = 42.0f;
+//     teleJson["servo_current"] = 40.5f;
+//     teleJson["servo_speed"] = 12.3f;
+
+//     teleJson["vibro_duty"] = 128;
+//     teleJson["vibro_mode"] = 1;
+// }
 
 void BleApp::sendTelemetry(const ControlTelemetry &t)
 {
