@@ -6,16 +6,16 @@
 struct ControlTelemetry
 {
 
-    float flexRawOhm = 0.0f;
-    float flexFilteredOhm = 0.0f;
+    float flexRawOhm[NUM_PAIRS] = {};
+    float flexFilteredOhm[NUM_PAIRS] = {};
 
     float fsrRawOhm = 0.0f;
     float fsrFilteredOhm = 0.0f;
     float fsrForceN = 0.0f;
 
-    float servoTargetDeg = 0.0f;
-    float servoCurrentDeg = 0.0f;
-    float servoSpeedDps = 0.0f;
+    float servoTargetDeg[NUM_PAIRS] = {};
+    float servoCurrentDeg[NUM_PAIRS] = {};
+    float servoSpeedDps[NUM_PAIRS] = {};
 
     uint8_t vibroDuty = 0;
     bool vibroActive = false;
@@ -28,26 +28,23 @@ public:
     Control() = default;
 
     void begin(const Settings &s);
-
     void reconfigure(const Settings &s);
-
     void update();
 
     const ControlTelemetry &getTelemetry() const { return tele; }
-
     const Settings &getSettings() const { return current; }
 
 private:
     Settings current{};
 
-    Servo servo;
-    float servoAngleDeg = 180.0f;
-    uint32_t lastServoUpdate = 0;
+    Servo servos[NUM_PAIRS];
+    float servoAngleDeg[NUM_PAIRS] = {};
+    uint32_t lastServoUpdate[NUM_PAIRS] = {};
 
-    float flexFiltered = 0.0f;
+    float flexFiltered[NUM_PAIRS] = {};
     float fsrFiltered = 0.0f;
 
-    float flexRaw = 0.0f;
+    float flexRaw[NUM_PAIRS] = {};
     float fsrRaw = 0.0f;
 
     uint8_t vibroDuty = 0;
@@ -57,11 +54,11 @@ private:
     float smooth(float prev, float cur, float alpha);
     float readResistance(uint8_t pin, uint32_t pullupOhm);
     float fsrToNewton(float resistanceOhm);
-    float flexToAngle(float rohm) const;
+    float flexToAngle(float rohm, int idx) const;
 
     uint8_t computeVibroDuty(float forceN, bool &outPulseMode);
 
-    void updateServo(float targetAngleDeg);
+    void updateServo(float targetAngleDeg, int idx);
     void updateVibro(uint8_t duty);
     void setupHardware();
 };

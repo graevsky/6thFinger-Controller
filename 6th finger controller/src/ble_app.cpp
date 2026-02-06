@@ -7,6 +7,20 @@ static void ledSet(bool on)
     digitalWrite(BLE_LED_PIN, on ? HIGH : LOW);
 }
 
+void BleApp::callNotify(NimBLECharacteristic *ch)
+{
+    if (!ch)
+        return;
+    ch->notify();
+}
+
+void BleApp::callIndicate(NimBLECharacteristic *ch)
+{
+    if (!ch)
+        return;
+    ch->indicate();
+}
+
 void BleApp::updateLed()
 {
     uint32_t now = millis();
@@ -43,32 +57,46 @@ void BleApp::loadSettings()
 {
     nvs.begin("cfg", true);
 
-    Settings s = current;
+    Settings s;
 
-    s.fsrPin = nvs.getUChar("fsrPin", s.fsrPin);
-    s.fsrPullupOhm = nvs.getULong("fsrPull", s.fsrPullupOhm);
-    s.fsrSoftThresholdN = nvs.getFloat("fsrSoft", s.fsrSoftThresholdN);
-    s.fsrHardMaxN = nvs.getFloat("fsrHard", s.fsrHardMaxN);
+    String raw = nvs.getString("json", "");
+    if (raw.length() > 0)
+    {
+        StaticJsonDocument<1024> doc;
+        auto err = deserializeJson(doc, raw);
+        if (!err)
+        {
+            s.applyJson(doc);
+        }
+    }
+    else
+    {
+        s.fsrPin = nvs.getUChar("fsrPin", s.fsrPin);
+        s.fsrPullupOhm = nvs.getULong("fsrPull", s.fsrPullupOhm);
+        s.fsrSoftThresholdN = nvs.getFloat("fsrSoft", s.fsrSoftThresholdN);
+        s.fsrHardMaxN = nvs.getFloat("fsrHard", s.fsrHardMaxN);
 
-    s.flexPin = nvs.getUChar("flexPin", s.flexPin);
-    s.flexPullupOhm = nvs.getULong("flexPull", s.flexPullupOhm);
-    s.flexStraightOhm = nvs.getULong("flxSt", s.flexStraightOhm);
-    s.flexBendOhm = nvs.getULong("flxBd", s.flexBendOhm);
+        s.flex[0].flexPin = nvs.getUChar("flexPin", s.flex[0].flexPin);
+        s.flex[0].flexPullupOhm = nvs.getULong("flexPull", s.flex[0].flexPullupOhm);
+        s.flex[0].flexStraightOhm = nvs.getULong("flxSt", s.flex[0].flexStraightOhm);
+        s.flex[0].flexBendOhm = nvs.getULong("flxBd", s.flex[0].flexBendOhm);
 
-    s.vibroPin = nvs.getUChar("vPin", s.vibroPin);
-    s.vibroFreqHz = nvs.getUShort("vFreq", s.vibroFreqHz);
-    s.vibroMode = (VibroMode)nvs.getUChar("vMode", (uint8_t)s.vibroMode);
-    s.vibroMaxDuty = nvs.getUChar("vMax", s.vibroMaxDuty);
-    s.vibroMinDuty = nvs.getUChar("vMin", s.vibroMinDuty);
-    s.vibroSoftPower = nvs.getUChar("vSoft", s.vibroSoftPower);
-    s.vibroPulseBase = nvs.getUChar("vBase", s.vibroPulseBase);
+        s.vibroPin = nvs.getUChar("vPin", s.vibroPin);
+        s.vibroFreqHz = nvs.getUShort("vFreq", s.vibroFreqHz);
+        s.vibroMode = (VibroMode)nvs.getUChar("vMode", (uint8_t)s.vibroMode);
+        s.vibroMaxDuty = nvs.getUChar("vMax", s.vibroMaxDuty);
+        s.vibroMinDuty = nvs.getUChar("vMin", s.vibroMinDuty);
+        s.vibroSoftPower = nvs.getUChar("vSoft", s.vibroSoftPower);
+        s.vibroPulseBase = nvs.getUChar("vBase", s.vibroPulseBase);
 
-    s.servoPin = nvs.getUChar("sPin", s.servoPin);
-    s.servoMinDeg = nvs.getUChar("sMn", s.servoMinDeg);
-    s.servoMaxDeg = nvs.getUChar("sMx", s.servoMaxDeg);
-    s.servoManual = (ServoManualMode)nvs.getUChar("sMod", (uint8_t)s.servoManual);
-    s.servoManualDeg = nvs.getUChar("sMD", s.servoManualDeg);
-    s.servoMaxSpeedDegPerSec = nvs.getFloat("sSpd", s.servoMaxSpeedDegPerSec);
+        s.servo[0].servoPin = nvs.getUChar("sPin", s.servo[0].servoPin);
+        s.servo[0].servoMinDeg = nvs.getUChar("sMn", s.servo[0].servoMinDeg);
+        s.servo[0].servoMaxDeg = nvs.getUChar("sMx", s.servo[0].servoMaxDeg);
+        s.servo[0].servoManual =
+            (ServoManualMode)nvs.getUChar("sMod", (uint8_t)s.servo[0].servoManual);
+        s.servo[0].servoManualDeg = nvs.getUChar("sMD", s.servo[0].servoManualDeg);
+        s.servo[0].servoMaxSpeedDegPerSec = nvs.getFloat("sSpd", s.servo[0].servoMaxSpeedDegPerSec);
+    }
 
     current = s;
     nvs.end();
@@ -78,30 +106,11 @@ void BleApp::saveSettings()
 {
     nvs.begin("cfg", false);
 
-    nvs.putUChar("fsrPin", current.fsrPin);
-    nvs.putULong("fsrPull", current.fsrPullupOhm);
-    nvs.putFloat("fsrSoft", current.fsrSoftThresholdN);
-    nvs.putFloat("fsrHard", current.fsrHardMaxN);
-
-    nvs.putUChar("flexPin", current.flexPin);
-    nvs.putULong("flexPull", current.flexPullupOhm);
-    nvs.putULong("flxSt", current.flexStraightOhm);
-    nvs.putULong("flxBd", current.flexBendOhm);
-
-    nvs.putUChar("vPin", current.vibroPin);
-    nvs.putUShort("vFreq", current.vibroFreqHz);
-    nvs.putUChar("vMode", (uint8_t)current.vibroMode);
-    nvs.putUChar("vMax", current.vibroMaxDuty);
-    nvs.putUChar("vMin", current.vibroMinDuty);
-    nvs.putUChar("vSoft", current.vibroSoftPower);
-    nvs.putUChar("vBase", current.vibroPulseBase);
-
-    nvs.putUChar("sPin", current.servoPin);
-    nvs.putUChar("sMn", current.servoMinDeg);
-    nvs.putUChar("sMx", current.servoMaxDeg);
-    nvs.putUChar("sMod", (uint8_t)current.servoManual);
-    nvs.putUChar("sMD", current.servoManualDeg);
-    nvs.putFloat("sSpd", current.servoMaxSpeedDegPerSec);
+    StaticJsonDocument<1024> doc;
+    current.toJson(doc);
+    String raw;
+    serializeJson(doc, raw);
+    nvs.putString("json", raw);
 
     nvs.end();
 }
@@ -124,10 +133,30 @@ public:
     BleApp *app;
     ConnCB(BleApp *a) : app(a) {}
 
-    void onConnect(NimBLEServer *) override { app->led = BleApp::LedMode::Conn; }
+    void onConnect(NimBLEServer *) override
+    {
+        app->led = BleApp::LedMode::Conn;
+
+        app->teleEnabled = false;
+
+        app->pendingSendConfig = false;
+        app->pendingSendAck = false;
+        app->pendingAckOk = true;
+        app->pendingAckAtMs = 0;
+
+        app->telePauseUntilMs = millis() + 800;
+    }
+
     void onDisconnect(NimBLEServer *) override
     {
         app->led = BleApp::LedMode::Adv;
+        app->teleEnabled = false;
+
+        app->pendingSendConfig = false;
+        app->pendingSendAck = false;
+        app->pendingAckOk = true;
+        app->pendingAckAtMs = 0;
+
         NimBLEDevice::startAdvertising();
     }
 };
@@ -146,11 +175,11 @@ void BleApp::setupBLE()
 
     chCfgOut = svc->createCharacteristic(
         "6F1A0002-0000-4A4A-AA00-001122334400",
-        NIMBLE_PROPERTY::NOTIFY);
+        NIMBLE_PROPERTY::INDICATE);
 
     chAck = svc->createCharacteristic(
         "6F1A0003-0000-4A4A-AA00-001122334400",
-        NIMBLE_PROPERTY::NOTIFY);
+        NIMBLE_PROPERTY::INDICATE);
 
     chTele = svc->createCharacteristic(
         "6F1A0004-0000-4A4A-AA00-001122334400",
@@ -175,9 +204,46 @@ void BleApp::begin(const char *name)
     NimBLEDevice::init(name);
     NimBLEDevice::setPower(ESP_PWR_LVL_P7);
 
+    txMutex = xSemaphoreCreateMutex();
+
     loadSettings();
     setupBLE();
     startAdvertising();
+}
+
+void BleApp::sendConfig()
+{
+    if (chCfgOut == nullptr)
+        return;
+
+    StaticJsonDocument<2048> doc;
+    current.toJson(doc);
+    doc["type"] = "cfg";
+
+    String payload;
+    serializeJson(doc, payload);
+
+    Serial.println("========== CFG_SEND ==========");
+    Serial.print("CFG_JSON: ");
+    Serial.println(payload);
+    Serial.println("==================================");
+
+    sendJsonChunked(doc, chCfgOut, /*pauseTele=*/true, /*useIndicate=*/true);
+}
+
+void BleApp::sendAck(bool ok)
+{
+    if (chAck == nullptr)
+        return;
+
+    StaticJsonDocument<64> doc;
+    doc["type"] = "ack";
+    doc["ok"] = ok;
+
+    Serial.print("SEND_ACK ok=");
+    Serial.println(ok ? "true" : "false");
+
+    sendJsonChunked(doc, chAck, /*pauseTele=*/true, /*useIndicate=*/true);
 }
 
 void BleApp::applyIncomingJson(const JsonDocument &doc)
@@ -190,16 +256,14 @@ void BleApp::applyIncomingJson(const JsonDocument &doc)
 
     if (onSettingsChanged)
         onSettingsChanged(current);
-
-    sendAck(true);
-
-    StaticJsonDocument<512> reply;
-    current.toJson(reply);
-    sendJsonChunked(reply, chCfgOut);
 }
 
 void BleApp::handleChunk(const std::string &s)
 {
+    Serial.print("CHUNK: '");
+    Serial.print(s.c_str());
+    Serial.println("'");
+
     if (s == "[BEGIN]")
     {
         receivingChunks = true;
@@ -211,15 +275,58 @@ void BleApp::handleChunk(const std::string &s)
     {
         receivingChunks = false;
 
-        StaticJsonDocument<1024> doc;
-        auto err = deserializeJson(doc, chunkBuffer);
+        String json = chunkBuffer;
+        chunkBuffer = "";
+
+        Serial.println("========== CFG_IN RECEIVED ==========");
+        Serial.print("CFG_IN_JSON: ");
+        Serial.println(json);
+        Serial.println("=====================================");
+
+        StaticJsonDocument<2048> doc;
+        auto err = deserializeJson(doc, json);
         if (err)
         {
-            sendAck(false);
+            Serial.print("JSON parse error: ");
+            Serial.println(err.c_str());
+            Serial.print("RAW JSON: ");
+            Serial.println(json);
+
+            pendingAckOk = false;
+            pendingSendAck = true;
+            pendingAckAtMs = millis();
+            return;
+        }
+
+        const char *type = doc["type"] | "cfg_set";
+
+        if (strcmp(type, "cfg_ok") == 0)
+        {
+            teleEnabled = true;
+
+            pendingAckOk = true;
+            pendingSendAck = true;
+            pendingAckAtMs = millis();
+            return;
+        }
+
+        if (strcmp(type, "cfg_get") == 0)
+        {
+            pendingSendConfig = true;
+
+            pendingAckOk = true;
+            pendingSendAck = true;
+            pendingAckAtMs = millis() + ACK_DELAY_MS;
             return;
         }
 
         applyIncomingJson(doc);
+
+        pendingSendConfig = true;
+
+        pendingAckOk = true;
+        pendingSendAck = true;
+        pendingAckAtMs = millis() + ACK_DELAY_MS;
         return;
     }
 
@@ -227,74 +334,117 @@ void BleApp::handleChunk(const std::string &s)
         chunkBuffer += s.c_str();
 }
 
-void BleApp::sendAck(bool ok)
+void BleApp::sendJsonChunked(
+    const JsonDocument &doc,
+    NimBLECharacteristic *ch,
+    bool pauseTele,
+    bool useIndicate)
 {
-    StaticJsonDocument<64> doc;
-    doc["ack"] = ok;
+    if (ch == nullptr)
+        return;
 
-    String s;
-    serializeJson(doc, s);
-
-    chAck->setValue(s.c_str());
-    chAck->notify();
-    led = LedMode::Notify;
-}
-
-void BleApp::sendJsonChunked(const JsonDocument &doc, NimBLECharacteristic *ch)
-{
-    String payload;
-    serializeJson(doc, payload);
-    const int CH = 18;
-
-    ch->setValue("[BEGIN]");
-    ch->notify();
-
-    for (int i = 0; i < payload.length(); i += CH)
+    if (pauseTele)
     {
-        String part = payload.substring(i, i + CH);
-        ch->setValue(part);
-        ch->notify();
+        telePauseUntilMs = millis() + PAUSE_TELE_MS;
     }
 
-    ch->setValue("[END]");
-    ch->notify();
+    if (txMutex != nullptr)
+    {
+        if (xSemaphoreTake(txMutex, pdMS_TO_TICKS(4000)) != pdTRUE)
+        {
+            Serial.println("sendJsonChunked: TX mutex timeout");
+            return;
+        }
+    }
+
+    String payload;
+    serializeJson(doc, payload);
+
+    const int CHUNK_BYTES = 20;
+
+    const int dly = useIndicate ? 55 : (pauseTele ? 8 : 2);
+
+    auto sendPart = [&](const String &s)
+    {
+        ch->setValue(s);
+
+        if (useIndicate)
+            callIndicate(ch);
+        else
+            callNotify(ch);
+
+        const char *tag =
+            (ch == chCfgOut) ? "CFG" : (ch == chAck) ? "ACK"
+                                   : (ch == chTele)  ? "TELE"
+                                                     : "UNK";
+
+        Serial.print("TX_");
+        Serial.print(tag);
+        Serial.print("_CHUNK: '");
+        Serial.print(s);
+        Serial.println("'");
+
+        delay(dly);
+        yield();
+    };
+
+    sendPart("[BEGIN]");
+
+    for (int i = 0; i < (int)payload.length(); i += CHUNK_BYTES)
+    {
+        sendPart(payload.substring(i, i + CHUNK_BYTES));
+    }
+
+    sendPart("[END]");
 
     led = LedMode::Notify;
+
+    if (txMutex != nullptr)
+        xSemaphoreGive(txMutex);
 }
 
 void BleApp::makeTelemetryJson(const ControlTelemetry &t)
 {
     teleJson.clear();
-    teleJson["flex_raw"] = t.flexRawOhm;
-    teleJson["flex_filt"] = t.flexFilteredOhm;
+
+    for (int i = 0; i < NUM_PAIRS; ++i)
+    {
+        const FlexSettings &fCfg = current.flex[i];
+        const ServoSettings &sCfg = current.servo[i];
+
+        if (fCfg.flexPin == 0xFF || sCfg.servoPin == 0xFF ||
+            fCfg.flexPin == 0 || sCfg.servoPin == 0)
+        {
+            continue;
+        }
+
+        char key[20];
+
+        snprintf(key, sizeof(key), "flex_raw_%d", i);
+        teleJson[key] = t.flexRawOhm[i];
+
+        snprintf(key, sizeof(key), "flex_filt_%d", i);
+        teleJson[key] = t.flexFilteredOhm[i];
+
+        snprintf(key, sizeof(key), "servo_target_%d", i);
+        teleJson[key] = t.servoTargetDeg[i];
+
+        snprintf(key, sizeof(key), "servo_current_%d", i);
+        teleJson[key] = t.servoCurrentDeg[i];
+
+        snprintf(key, sizeof(key), "servo_speed_%d", i);
+        teleJson[key] = t.servoSpeedDps[i];
+    }
+
     teleJson["fsr_raw"] = t.fsrRawOhm;
     teleJson["fsr_filt"] = t.fsrFilteredOhm;
     teleJson["forceN"] = t.fsrForceN;
 
-    teleJson["servo_target"] = t.servoTargetDeg;
-    teleJson["servo_current"] = t.servoCurrentDeg;
-    teleJson["servo_speed"] = t.servoSpeedDps;
-
     teleJson["vibro_duty"] = t.vibroDuty;
     teleJson["vibro_mode"] = (uint8_t)t.vibroMode;
+
+    teleJson["type"] = "tele";
 }
-
-// void BleApp::makeTelemetryJson(const ControlTelemetry &)
-// {
-//     teleJson.clear();
-//     teleJson["flex_raw"] = 12345;
-//     teleJson["flex_filt"] = 23456;
-//     teleJson["fsr_raw"] = 34567;
-//     teleJson["fsr_filt"] = 45678;
-//     teleJson["forceN"] = 9.99f;
-
-//     teleJson["servo_target"] = 42.0f;
-//     teleJson["servo_current"] = 40.5f;
-//     teleJson["servo_speed"] = 12.3f;
-
-//     teleJson["vibro_duty"] = 128;
-//     teleJson["vibro_mode"] = 1;
-// }
 
 void BleApp::sendTelemetry(const ControlTelemetry &t)
 {
@@ -306,14 +456,41 @@ void BleApp::loop()
 {
     updateLed();
 
-    if (teleDirty)
+    const uint32_t now = millis();
+
+    if (pendingSendConfig)
     {
-        uint32_t now = millis();
-        if (now - lastTeleSend >= 50)
+        pendingSendConfig = false;
+        sendConfig();
+
+        if (pendingSendAck)
         {
-            lastTeleSend = now;
-            teleDirty = false;
-            sendJsonChunked(teleJson, chTele);
+            uint32_t t = now + ACK_DELAY_MS;
+            if (pendingAckAtMs < t)
+                pendingAckAtMs = t;
         }
     }
+
+    if (pendingSendAck && (pendingAckAtMs == 0 || now >= pendingAckAtMs))
+    {
+        const bool ok = pendingAckOk;
+        pendingSendAck = false;
+        pendingAckAtMs = 0;
+        sendAck(ok);
+    }
+
+    if (!teleEnabled)
+        return;
+    if (!teleDirty)
+        return;
+
+    if (now < telePauseUntilMs)
+        return;
+    if (now - lastTeleSend < TELE_MIN_PERIOD_MS)
+        return;
+
+    lastTeleSend = now;
+    teleDirty = false;
+
+    sendJsonChunked(teleJson, chTele, /*pauseTele=*/false, /*useIndicate=*/false);
 }

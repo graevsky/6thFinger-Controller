@@ -1,4 +1,5 @@
 #include "control.h"
+
 static const int VIBRO_CHANNEL = 4;
 
 float Control::smooth(float prev, float cur, float alpha)
@@ -35,19 +36,22 @@ float Control::fsrToNewton(float resistanceOhm)
     return f;
 }
 
-float Control::flexToAngle(float rohm) const
+float Control::flexToAngle(float rohm, int idx) const
 {
-    const float minA = current.servoMinDeg;
-    const float maxA = current.servoMaxDeg;
+    const FlexSettings &fCfg = current.flex[idx];
+    const ServoSettings &sCfg = current.servo[idx];
 
-    if (rohm <= current.flexStraightOhm)
+    const float minA = sCfg.servoMinDeg;
+    const float maxA = sCfg.servoMaxDeg;
+
+    if (rohm <= fCfg.flexStraightOhm)
         return maxA;
 
-    if (rohm >= current.flexBendOhm)
+    if (rohm >= fCfg.flexBendOhm)
         return minA;
 
-    float t = (rohm - current.flexStraightOhm) /
-              float(current.flexBendOhm - current.flexStraightOhm);
+    float t = (rohm - fCfg.flexStraightOhm) /
+              float(fCfg.flexBendOhm - fCfg.flexStraightOhm);
     if (t < 0.0f)
         t = 0.0f;
     if (t > 1.0f)
@@ -100,12 +104,10 @@ uint8_t Control::computeVibroDuty(float N, bool &outPulseMode)
 
     if (current.vibroMode == VibroMode::Pulse)
     {
-
         dutyF = base + sinf(x * 2.0f * PI * 4.0f) * amp;
     }
     else
     {
-
         dutyF = base + amp;
     }
 
@@ -117,40 +119,42 @@ uint8_t Control::computeVibroDuty(float N, bool &outPulseMode)
     return (uint8_t)dutyF;
 }
 
-void Control::updateServo(float targetAngleDeg)
+void Control::updateServo(float targetAngleDeg, int idx)
 {
-    tele.servoTargetDeg = targetAngleDeg;
+    ServoSettings &cfg = current.servo[idx];
 
-    if (current.servoManual == ServoManualMode::Manual)
-        targetAngleDeg = current.servoManualDeg;
+    tele.servoTargetDeg[idx] = targetAngleDeg;
+
+    if (cfg.servoManual == ServoManualMode::Manual)
+        targetAngleDeg = cfg.servoManualDeg;
 
     uint32_t now = millis();
-    float dt = (now - lastServoUpdate) / 1000.0f;
+    float dt = (now - lastServoUpdate[idx]) / 1000.0f;
     if (dt <= 0.0001f)
         dt = 0.0001f;
-    lastServoUpdate = now;
+    lastServoUpdate[idx] = now;
 
-    float maxStep = current.servoMaxSpeedDegPerSec * dt;
-    float diff = targetAngleDeg - servoAngleDeg;
+    float maxStep = cfg.servoMaxSpeedDegPerSec * dt;
+    float diff = targetAngleDeg - servoAngleDeg[idx];
 
     if (fabsf(diff) > maxStep)
-        servoAngleDeg += (diff > 0 ? maxStep : -maxStep);
+        servoAngleDeg[idx] += (diff > 0 ? maxStep : -maxStep);
     else
-        servoAngleDeg = targetAngleDeg;
+        servoAngleDeg[idx] = targetAngleDeg;
 
-    tele.servoCurrentDeg = servoAngleDeg;
-    tele.servoSpeedDps = fabsf(diff) / dt;
+    tele.servoCurrentDeg[idx] = servoAngleDeg[idx];
+    tele.servoSpeedDps[idx] = fabsf(diff) / dt;
 
-    if (servoAngleDeg >= current.servoMaxDeg - 1.0f)
+    if (servoAngleDeg[idx] >= cfg.servoMaxDeg - 1.0f)
     {
-        if (servo.attached())
-            servo.detach();
+        if (servos[idx].attached())
+            servos[idx].detach();
     }
     else
     {
-        if (!servo.attached())
-            servo.attach(current.servoPin, 500, 2400);
-        servo.write((int)servoAngleDeg);
+        if (!servos[idx].attached())
+            servos[idx].attach(cfg.servoPin, 500, 2400);
+        servos[idx].write((int)servoAngleDeg[idx]);
     }
 }
 
@@ -166,24 +170,29 @@ void Control::updateVibro(uint8_t duty)
 
 void Control::setupHardware()
 {
-
     analogReadResolution(12);
     analogSetAttenuation(ADC_11db);
 
     pinMode(current.vibroPin, OUTPUT);
     ledcSetup(VIBRO_CHANNEL, current.vibroFreqHz, 8);
     ledcAttachPin(current.vibroPin, VIBRO_CHANNEL);
-    
     ledcWrite(VIBRO_CHANNEL, 0);
 
-    servo.detach();
-    servoAngleDeg = current.servoMaxDeg;
-    lastServoUpdate = millis();
+    uint32_t now = millis();
+    for (int i = 0; i < NUM_PAIRS; ++i)
+    {
+        if (servos[i].attached())
+            servos[i].detach();
+        servoAngleDeg[i] = current.servo[i].servoMaxDeg;
+        lastServoUpdate[i] = now;
 
-    flexFiltered = 0.0f;
+        flexFiltered[i] = 0.0f;
+        flexRaw[i] = 0.0f;
+    }
+
     fsrFiltered = 0.0f;
-    flexRaw = 0.0f;
     fsrRaw = 0.0f;
+    vibroDuty = 0;
 }
 
 void Control::begin(const Settings &s)
@@ -200,23 +209,41 @@ void Control::reconfigure(const Settings &s)
 
 void Control::update()
 {
-
-    flexRaw = readResistance(current.flexPin, current.flexPullupOhm);
+    // FSR — один на все пары
     fsrRaw = readResistance(current.fsrPin, current.fsrPullupOhm);
-
-    flexFiltered = smooth(flexFiltered, flexRaw, 0.25f);
     fsrFiltered = smooth(fsrFiltered, fsrRaw, 0.25f);
 
-    tele.flexRawOhm = flexRaw;
-    tele.flexFilteredOhm = flexFiltered;
     tele.fsrRawOhm = fsrRaw;
     tele.fsrFilteredOhm = fsrFiltered;
 
     float forceN = fsrToNewton(fsrFiltered);
     tele.fsrForceN = forceN;
 
-    float targetAngle = flexToAngle(flexFiltered);
-    updateServo(targetAngle);
+    // Каждая пара: свой flex и своя серва
+    for (int i = 0; i < NUM_PAIRS; ++i)
+    {
+        const FlexSettings &cfg = current.flex[i];
+        const ServoSettings &sCfg = current.servo[i];
+
+        // Неактивная пара: pin помечен как 0xFF или 0
+        if (cfg.flexPin == 0xFF || sCfg.servoPin == 0xFF ||
+            cfg.flexPin == 0 || sCfg.servoPin == 0)
+        {
+            // Серва отключена, телеметрию для неё не трогаем
+            if (servos[i].attached())
+                servos[i].detach();
+            continue;
+        }
+
+        flexRaw[i] = readResistance(cfg.flexPin, cfg.flexPullupOhm);
+        flexFiltered[i] = smooth(flexFiltered[i], flexRaw[i], 0.25f);
+
+        tele.flexRawOhm[i] = flexRaw[i];
+        tele.flexFilteredOhm[i] = flexFiltered[i];
+
+        float targetAngle = flexToAngle(flexFiltered[i], i);
+        updateServo(targetAngle, i);
+    }
 
     bool pulseMode = false;
     uint8_t duty = computeVibroDuty(forceN, pulseMode);
