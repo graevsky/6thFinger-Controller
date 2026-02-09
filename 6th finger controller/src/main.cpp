@@ -35,7 +35,7 @@ void loop()
 
     {
         const ControlTelemetry &t = ctrl.getTelemetry();
-        }
+    }
 
     ble.sendTelemetry(ctrl.getTelemetry());
     ble.loop();

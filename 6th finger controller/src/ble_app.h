@@ -37,11 +37,8 @@ private:
     NimBLEServer *server = nullptr;
 
     NimBLECharacteristic *chCfgIn = nullptr;
-
     NimBLECharacteristic *chCfgOut = nullptr;
-
     NimBLECharacteristic *chAck = nullptr;
-
     NimBLECharacteristic *chTele = nullptr;
 
     Settings current{};
@@ -70,6 +67,9 @@ private:
     static constexpr uint32_t ACK_DELAY_MS = 250;
     static constexpr uint32_t PAUSE_TELE_MS = 6000;
 
+    bool authed = false;
+    bool isAuthed() const { return (current.pinCode == 0) || authed; }
+
     enum class LedMode
     {
         Adv,
@@ -97,6 +97,9 @@ private:
     void applyIncomingJson(const JsonDocument &doc);
     void sendConfig();
     void sendAck(bool ok);
+
+    // auth response
+    void sendAuthAck(bool ok);
 
     void makeTelemetryJson(const ControlTelemetry &t);
 

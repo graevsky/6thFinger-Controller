@@ -96,6 +96,9 @@ void BleApp::loadSettings()
             (ServoManualMode)nvs.getUChar("sMod", (uint8_t)s.servo[0].servoManual);
         s.servo[0].servoManualDeg = nvs.getUChar("sMD", s.servo[0].servoManualDeg);
         s.servo[0].servoMaxSpeedDegPerSec = nvs.getFloat("sSpd", s.servo[0].servoMaxSpeedDegPerSec);
+
+        // pin (если старый nvs - просто 0)
+        s.pinCode = nvs.getUShort("pin", 0);
     }
 
     current = s;
@@ -111,6 +114,9 @@ void BleApp::saveSettings()
     String raw;
     serializeJson(doc, raw);
     nvs.putString("json", raw);
+
+    // на всякий случай (если кому-то удобно отдельно)
+    nvs.putUShort("pin", current.pinCode);
 
     nvs.end();
 }
@@ -145,6 +151,9 @@ public:
         app->pendingAckAtMs = 0;
 
         app->telePauseUntilMs = millis() + 800;
+
+        // auth reset: если pinCode == 0, то не требуем pin
+        app->authed = (app->current.pinCode == 0);
     }
 
     void onDisconnect(NimBLEServer *) override
@@ -156,6 +165,8 @@ public:
         app->pendingSendAck = false;
         app->pendingAckOk = true;
         app->pendingAckAtMs = 0;
+
+        app->authed = false;
 
         NimBLEDevice::startAdvertising();
     }
@@ -218,7 +229,16 @@ void BleApp::sendConfig()
 
     StaticJsonDocument<2048> doc;
     current.toJson(doc);
+
     doc["type"] = "cfg";
+    doc["pinSet"] = (current.pinCode != 0);
+    doc["authRequired"] = (!isAuthed() && current.pinCode != 0);
+
+    // если нужен PIN и мы не authed — не отдаем pinCode
+    if (!isAuthed() && current.pinCode != 0)
+    {
+        doc.remove("pinCode");
+    }
 
     String payload;
     serializeJson(doc, payload);
@@ -241,6 +261,21 @@ void BleApp::sendAck(bool ok)
     doc["ok"] = ok;
 
     Serial.print("SEND_ACK ok=");
+    Serial.println(ok ? "true" : "false");
+
+    sendJsonChunked(doc, chAck, /*pauseTele=*/true, /*useIndicate=*/true);
+}
+
+void BleApp::sendAuthAck(bool ok)
+{
+    if (chAck == nullptr)
+        return;
+
+    StaticJsonDocument<96> doc;
+    doc["type"] = "auth";
+    doc["ok"] = ok;
+
+    Serial.print("SEND_AUTH ok=");
     Serial.println(ok ? "true" : "false");
 
     sendJsonChunked(doc, chAck, /*pauseTele=*/true, /*useIndicate=*/true);
@@ -300,8 +335,58 @@ void BleApp::handleChunk(const std::string &s)
 
         const char *type = doc["type"] | "cfg_set";
 
+        if (strcmp(type, "auth") == 0)
+        {
+            if (current.pinCode == 0)
+            {
+                authed = true;
+                sendAuthAck(true);
+                pendingSendConfig = true;
+                return;
+            }
+
+            const char *pinStr = doc["pin"] | "";
+            bool ok = false;
+
+            if (strlen(pinStr) == 4)
+            {
+                bool digits = true;
+                for (int i = 0; i < 4; i++)
+                {
+                    if (pinStr[i] < '0' || pinStr[i] > '9')
+                    {
+                        digits = false;
+                        break;
+                    }
+                }
+                if (digits)
+                {
+                    int code = atoi(pinStr);
+                    ok = (code == (int)current.pinCode);
+                }
+            }
+
+            if (ok)
+            {
+                authed = true;
+                sendAuthAck(true);
+                pendingSendConfig = true;
+            }
+            else
+            {
+                sendAuthAck(false);
+            }
+            return;
+        }
+
         if (strcmp(type, "cfg_ok") == 0)
         {
+            if (!isAuthed() && current.pinCode != 0)
+            {
+                sendAuthAck(false);
+                return;
+            }
+
             teleEnabled = true;
 
             pendingAckOk = true;
@@ -315,6 +400,14 @@ void BleApp::handleChunk(const std::string &s)
             pendingSendConfig = true;
 
             pendingAckOk = true;
+            pendingSendAck = true;
+            pendingAckAtMs = millis() + ACK_DELAY_MS;
+            return;
+        }
+
+        if (!isAuthed() && current.pinCode != 0)
+        {
+            pendingAckOk = false;
             pendingSendAck = true;
             pendingAckAtMs = millis() + ACK_DELAY_MS;
             return;
@@ -361,7 +454,6 @@ void BleApp::sendJsonChunked(
     serializeJson(doc, payload);
 
     const int CHUNK_BYTES = 20;
-
     const int dly = useIndicate ? 55 : (pauseTele ? 8 : 2);
 
     auto sendPart = [&](const String &s)

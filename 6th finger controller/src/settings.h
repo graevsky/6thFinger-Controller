@@ -101,11 +101,14 @@ struct Settings
     uint8_t vibroSoftPower = 200;
     uint8_t vibroPulseBase = 120;
 
+    // PIN (0000 = выключен)
+    uint16_t pinCode = 0;
+
     uint32_t settingsVersion = 1;
 
     Settings()
     {
-        // Flex & Sero settings. Pairs 2-4 are inactive by default
+        // Flex & Servo settings. Pairs 2-4 are inactive by default
         for (int i = 1; i < NUM_PAIRS; ++i)
         {
             flex[i] = FlexSettings{};
@@ -154,6 +157,9 @@ struct Settings
         doc["vibroMinDuty"] = vibroMinDuty;
         doc["vibroSoftPower"] = vibroSoftPower;
         doc["vibroPulseBase"] = vibroPulseBase;
+
+        // PIN
+        doc["pinCode"] = pinCode;
 
         doc["settingsVersion"] = settingsVersion;
     }
@@ -274,6 +280,9 @@ struct Settings
             vibroSoftPower = doc["vibroSoftPower"];
         if (doc.containsKey("vibroPulseBase"))
             vibroPulseBase = doc["vibroPulseBase"];
+
+        if (doc.containsKey("pinCode"))
+            pinCode = doc["pinCode"];
 
         if (doc.containsKey("settingsVersion"))
             settingsVersion = doc["settingsVersion"];
