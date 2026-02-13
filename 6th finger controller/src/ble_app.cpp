@@ -405,6 +405,23 @@ void BleApp::handleChunk(const std::string &s)
             return;
         }
 
+        if (strcmp(type, "reboot") == 0)
+        {
+            if (!isAuthed() && current.pinCode != 0)
+            {
+                pendingAckOk = false;
+                pendingSendAck = true;
+                pendingAckAtMs = millis() + ACK_DELAY_MS;
+                return;
+            }
+
+            sendAck(true);
+
+            delay(250);
+            ESP.restart();
+            return;
+        }
+
         if (!isAuthed() && current.pinCode != 0)
         {
             pendingAckOk = false;
