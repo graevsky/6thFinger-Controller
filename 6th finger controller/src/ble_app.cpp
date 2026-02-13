@@ -387,8 +387,6 @@ void BleApp::handleChunk(const std::string &s)
                 return;
             }
 
-            teleEnabled = true;
-
             pendingAckOk = true;
             pendingSendAck = true;
             pendingAckAtMs = millis();
@@ -419,6 +417,25 @@ void BleApp::handleChunk(const std::string &s)
 
             delay(250);
             ESP.restart();
+            return;
+        }
+
+        if (strcmp(type, "tele_set") == 0)
+        {
+            if (!isAuthed() && current.pinCode != 0)
+            {
+                pendingAckOk = false;
+                pendingSendAck = true;
+                pendingAckAtMs = millis() + ACK_DELAY_MS;
+                return;
+            }
+
+            bool en = doc["enabled"] | true;
+            teleEnabled = en;
+
+            pendingAckOk = true;
+            pendingSendAck = true;
+            pendingAckAtMs = millis() + ACK_DELAY_MS;
             return;
         }
 
@@ -557,6 +574,8 @@ void BleApp::makeTelemetryJson(const ControlTelemetry &t)
 
 void BleApp::sendTelemetry(const ControlTelemetry &t)
 {
+    if (!teleEnabled)
+        return;
     makeTelemetryJson(t);
     teleDirty = true;
 }
