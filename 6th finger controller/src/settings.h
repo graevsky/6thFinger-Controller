@@ -45,8 +45,8 @@ struct FlexSettings
 };
 
 struct ServoSettings
-{
-    uint8_t servoPin = 20;
+{   
+    uint8_t servoPin = 21;
     uint8_t servoMinDeg = 40;
     uint8_t servoMaxDeg = 180;
     ServoManualMode servoManual = ServoManualMode::Auto;

@@ -5,7 +5,6 @@
 
 struct ControlTelemetry
 {
-
     float flexRawOhm[NUM_PAIRS] = {};
     float flexFilteredOhm[NUM_PAIRS] = {};
 
@@ -47,12 +46,26 @@ private:
     float flexRaw[NUM_PAIRS] = {};
     float fsrRaw = 0.0f;
 
+    float fsrAdcFiltered = 0.0f;
+
     uint8_t vibroDuty = 0;
 
     ControlTelemetry tele{};
 
+    static constexpr int FSR_SAMPLES = 8;
+    static constexpr int FSR_OPEN_ADC = 6;
+    static constexpr float FSR_MAX_REPORT_OHM = 10000000.0f;
+    static constexpr float FSR_PRESS_ALPHA = 0.55f;
+    static constexpr float FSR_RELEASE_ALPHA = 0.35f;
+
     float smooth(float prev, float cur, float alpha);
+
+    int readAdcAvg(uint8_t pin, int samples);
     float readResistance(uint8_t pin, uint32_t pullupOhm);
+
+    float resistanceFromAdc(float adc, uint32_t pullupOhm) const;
+    float sanitizeResistanceForTelemetry(float resistanceOhm) const;
+
     float fsrToNewton(float resistanceOhm);
     float flexToAngle(float rohm, int idx) const;
 

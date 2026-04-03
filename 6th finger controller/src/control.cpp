@@ -1,10 +1,26 @@
 #include "control.h"
+#include <math.h>
 
 static const int VIBRO_CHANNEL = 4;
 
 float Control::smooth(float prev, float cur, float alpha)
 {
     return prev * (1.0f - alpha) + cur * alpha;
+}
+
+int Control::readAdcAvg(uint8_t pin, int samples)
+{
+    if (samples <= 1)
+        return analogRead(pin);
+
+    uint32_t sum = 0;
+    for (int i = 0; i < samples; ++i)
+    {
+        sum += analogRead(pin);
+        delayMicroseconds(120);
+    }
+
+    return (int)(sum / samples);
 }
 
 float Control::readResistance(uint8_t pin, uint32_t pullupOhm)
@@ -22,18 +38,61 @@ float Control::readResistance(uint8_t pin, uint32_t pullupOhm)
     return pullupOhm * (VCC / v - 1.0f);
 }
 
+float Control::resistanceFromAdc(float adc, uint32_t pullupOhm) const
+{
+    const float VCC = 3.3f;
+
+    if (pullupOhm == 0)
+        return INFINITY;
+
+    if (adc <= FSR_OPEN_ADC)
+        return INFINITY;
+
+    float v = (adc / 4095.0f) * VCC;
+
+    if (v <= 0.005f)
+        return INFINITY;
+
+    return pullupOhm * (VCC / v - 1.0f);
+}
+
+float Control::sanitizeResistanceForTelemetry(float resistanceOhm) const
+{
+    if (!isfinite(resistanceOhm) || resistanceOhm > FSR_MAX_REPORT_OHM)
+        return FSR_MAX_REPORT_OHM;
+
+    if (resistanceOhm < 0.0f)
+        return 0.0f;
+
+    return resistanceOhm;
+}
+
 float Control::fsrToNewton(float resistanceOhm)
 {
-    float kOhm = resistanceOhm / 1000.0f;
-    if (kOhm < 0.001f)
+    if (!isfinite(resistanceOhm))
+        return 0.0f;
+
+    const float R_NO_TOUCH = 150000.0f;
+
+    const float R_FULL_SCALE = 1200.0f;
+
+    if (resistanceOhm >= R_NO_TOUCH)
+        return 0.0f;
+
+    if (resistanceOhm <= R_FULL_SCALE)
         return current.fsrHardMaxN;
 
-    float f = 1.0f / kOhm;
-    if (f < 0.0f)
-        f = 0.0f;
-    if (f > current.fsrHardMaxN)
-        f = current.fsrHardMaxN;
-    return f;
+    float x = (logf(R_NO_TOUCH) - logf(resistanceOhm)) /
+              (logf(R_NO_TOUCH) - logf(R_FULL_SCALE));
+
+    if (x < 0.0f)
+        x = 0.0f;
+    if (x > 1.0f)
+        x = 1.0f;
+
+    x = powf(x, 2.2f);
+
+    return x * current.fsrHardMaxN;
 }
 
 float Control::flexToAngle(float rohm, int idx) const
@@ -192,6 +251,7 @@ void Control::setupHardware()
 
     fsrFiltered = 0.0f;
     fsrRaw = 0.0f;
+    fsrAdcFiltered = 0.0f;
     vibroDuty = 0;
 }
 
@@ -209,27 +269,28 @@ void Control::reconfigure(const Settings &s)
 
 void Control::update()
 {
-    // FSR — один на все пары
-    fsrRaw = readResistance(current.fsrPin, current.fsrPullupOhm);
-    fsrFiltered = smooth(fsrFiltered, fsrRaw, 0.25f);
+    int fsrAdcRaw = readAdcAvg(current.fsrPin, FSR_SAMPLES);
 
-    tele.fsrRawOhm = fsrRaw;
-    tele.fsrFilteredOhm = fsrFiltered;
+    float alpha = (fsrAdcRaw > fsrAdcFiltered) ? FSR_PRESS_ALPHA : FSR_RELEASE_ALPHA;
+    fsrAdcFiltered = smooth(fsrAdcFiltered, (float)fsrAdcRaw, alpha);
+
+    fsrRaw = resistanceFromAdc((float)fsrAdcRaw, current.fsrPullupOhm);
+    fsrFiltered = resistanceFromAdc(fsrAdcFiltered, current.fsrPullupOhm);
+
+    tele.fsrRawOhm = sanitizeResistanceForTelemetry(fsrRaw);
+    tele.fsrFilteredOhm = sanitizeResistanceForTelemetry(fsrFiltered);
 
     float forceN = fsrToNewton(fsrFiltered);
     tele.fsrForceN = forceN;
 
-    // Каждая пара: свой flex и своя серва
     for (int i = 0; i < NUM_PAIRS; ++i)
     {
         const FlexSettings &cfg = current.flex[i];
         const ServoSettings &sCfg = current.servo[i];
 
-        // Неактивная пара: pin помечен как 0xFF или 0
         if (cfg.flexPin == 0xFF || sCfg.servoPin == 0xFF ||
             cfg.flexPin == 0 || sCfg.servoPin == 0)
         {
-            // Серва отключена, телеметрию для неё не трогаем
             if (servos[i].attached())
                 servos[i].detach();
             continue;
