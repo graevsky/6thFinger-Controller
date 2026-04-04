@@ -58,6 +58,15 @@ private:
     static constexpr float FSR_PRESS_ALPHA = 0.55f;
     static constexpr float FSR_RELEASE_ALPHA = 0.35f;
 
+    static constexpr int FLEX_HISTORY = 5;
+    float flexHist[NUM_PAIRS][FLEX_HISTORY] = {};
+    uint8_t flexHistCount[NUM_PAIRS] = {};
+    uint8_t flexHistPos[NUM_PAIRS] = {};
+    uint8_t flexOutlierStrikes[NUM_PAIRS] = {};
+
+    float flexStableOhm[NUM_PAIRS] = {};
+    bool flexStableInit[NUM_PAIRS] = {};
+
     float smooth(float prev, float cur, float alpha);
 
     int readAdcAvg(uint8_t pin, int samples);
@@ -74,4 +83,8 @@ private:
     void updateServo(float targetAngleDeg, int idx);
     void updateVibro(uint8_t duty);
     void setupHardware();
+
+private:
+    void pushFlexHistory(int idx, float v);
+    float medianFlexHistory(int idx) const;
 };

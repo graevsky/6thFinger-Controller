@@ -62,7 +62,7 @@ void BleApp::loadSettings()
     String raw = nvs.getString("json", "");
     if (raw.length() > 0)
     {
-        StaticJsonDocument<1024> doc;
+        StaticJsonDocument<2048> doc;
         auto err = deserializeJson(doc, raw);
         if (!err)
         {
@@ -97,7 +97,6 @@ void BleApp::loadSettings()
         s.servo[0].servoManualDeg = nvs.getUChar("sMD", s.servo[0].servoManualDeg);
         s.servo[0].servoMaxSpeedDegPerSec = nvs.getFloat("sSpd", s.servo[0].servoMaxSpeedDegPerSec);
 
-        // pin (если старый nvs - просто 0)
         s.pinCode = nvs.getUShort("pin", 0);
     }
 
@@ -109,13 +108,12 @@ void BleApp::saveSettings()
 {
     nvs.begin("cfg", false);
 
-    StaticJsonDocument<1024> doc;
+    StaticJsonDocument<2048> doc;
     current.toJson(doc);
     String raw;
     serializeJson(doc, raw);
     nvs.putString("json", raw);
 
-    // на всякий случай (если кому-то удобно отдельно)
     nvs.putUShort("pin", current.pinCode);
 
     nvs.end();
@@ -152,7 +150,6 @@ public:
 
         app->telePauseUntilMs = millis() + 800;
 
-        // auth reset: если pinCode == 0, то не требуем pin
         app->authed = (app->current.pinCode == 0);
     }
 
@@ -234,7 +231,6 @@ void BleApp::sendConfig()
     doc["pinSet"] = (current.pinCode != 0);
     doc["authRequired"] = (!isAuthed() && current.pinCode != 0);
 
-    // если нужен PIN и мы не authed — не отдаем pinCode
     if (!isAuthed() && current.pinCode != 0)
     {
         doc.remove("pinCode");

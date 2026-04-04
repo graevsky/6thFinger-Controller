@@ -47,7 +47,7 @@ private:
     bool receivingChunks = false;
     String chunkBuffer;
 
-    StaticJsonDocument<1024> teleJson;
+    StaticJsonDocument<2048> teleJson;
     bool teleDirty = false;
     uint32_t lastTeleSend = 0;
 
@@ -98,7 +98,6 @@ private:
     void sendConfig();
     void sendAck(bool ok);
 
-    // auth response
     void sendAuthAck(bool ok);
 
     void makeTelemetryJson(const ControlTelemetry &t);

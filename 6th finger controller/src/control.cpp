@@ -73,7 +73,6 @@ float Control::fsrToNewton(float resistanceOhm)
         return 0.0f;
 
     const float R_NO_TOUCH = 150000.0f;
-
     const float R_FULL_SCALE = 1200.0f;
 
     if (resistanceOhm >= R_NO_TOUCH)
@@ -95,6 +94,15 @@ float Control::fsrToNewton(float resistanceOhm)
     return x * current.fsrHardMaxN;
 }
 
+static float clampf(float v, float a, float b)
+{
+    if (v < a)
+        return a;
+    if (v > b)
+        return b;
+    return v;
+}
+
 float Control::flexToAngle(float rohm, int idx) const
 {
     const FlexSettings &fCfg = current.flex[idx];
@@ -103,18 +111,22 @@ float Control::flexToAngle(float rohm, int idx) const
     const float minA = sCfg.servoMinDeg;
     const float maxA = sCfg.servoMaxDeg;
 
-    if (rohm <= fCfg.flexStraightOhm)
+    const float st = (float)fCfg.flexStraightOhm;
+    const float bd = (float)fCfg.flexBendOhm;
+
+    if (bd <= st + 1.0f)
+    {
+        return (rohm <= st) ? maxA : minA;
+    }
+
+    if (rohm <= st)
         return maxA;
 
-    if (rohm >= fCfg.flexBendOhm)
+    if (rohm >= bd)
         return minA;
 
-    float t = (rohm - fCfg.flexStraightOhm) /
-              float(fCfg.flexBendOhm - fCfg.flexStraightOhm);
-    if (t < 0.0f)
-        t = 0.0f;
-    if (t > 1.0f)
-        t = 1.0f;
+    float t = (rohm - st) / (bd - st);
+    t = clampf(t, 0.0f, 1.0f);
 
     return maxA - t * (maxA - minA);
 }
@@ -129,10 +141,7 @@ uint8_t Control::computeVibroDuty(float N, bool &outPulseMode)
     if (N <= current.fsrSoftThresholdN)
     {
         float t = N / current.fsrSoftThresholdN;
-        if (t < 0.0f)
-            t = 0.0f;
-        if (t > 1.0f)
-            t = 1.0f;
+        t = clampf(t, 0.0f, 1.0f);
 
         uint8_t duty = (uint8_t)(t * current.vibroSoftPower);
         if (duty < current.vibroMinDuty)
@@ -150,10 +159,7 @@ uint8_t Control::computeVibroDuty(float N, bool &outPulseMode)
         span = 1.0f;
 
     float t = over / span;
-    if (t < 0.0f)
-        t = 0.0f;
-    if (t > 1.0f)
-        t = 1.0f;
+    t = clampf(t, 0.0f, 1.0f);
 
     float base = current.vibroPulseBase;
     float amp = t * (current.vibroMaxDuty - base);
@@ -162,13 +168,9 @@ uint8_t Control::computeVibroDuty(float N, bool &outPulseMode)
     float dutyF = base;
 
     if (current.vibroMode == VibroMode::Pulse)
-    {
         dutyF = base + sinf(x * 2.0f * PI * 4.0f) * amp;
-    }
     else
-    {
         dutyF = base + amp;
-    }
 
     if (dutyF < current.vibroMinDuty)
         dutyF = current.vibroMinDuty;
@@ -227,6 +229,56 @@ void Control::updateVibro(uint8_t duty)
     ledcWrite(VIBRO_CHANNEL, duty);
 }
 
+void Control::pushFlexHistory(int idx, float v)
+{
+    uint8_t pos = flexHistPos[idx];
+    flexHist[idx][pos] = v;
+
+    pos++;
+    if (pos >= FLEX_HISTORY)
+        pos = 0;
+    flexHistPos[idx] = pos;
+
+    if (flexHistCount[idx] < FLEX_HISTORY)
+        flexHistCount[idx]++;
+}
+
+static float medianOfSmall(const float *arr, int n)
+{
+    float tmp[5];
+    for (int i = 0; i < n; ++i)
+        tmp[i] = arr[i];
+
+    for (int i = 1; i < n; ++i)
+    {
+        float key = tmp[i];
+        int j = i - 1;
+        while (j >= 0 && tmp[j] > key)
+        {
+            tmp[j + 1] = tmp[j];
+            j--;
+        }
+        tmp[j + 1] = key;
+    }
+
+    if (n <= 0)
+        return 0.0f;
+    return tmp[n / 2];
+}
+
+float Control::medianFlexHistory(int idx) const
+{
+    int n = (int)flexHistCount[idx];
+    if (n <= 0)
+        return 0.0f;
+
+    float tmp[5];
+    for (int i = 0; i < n; ++i)
+        tmp[i] = flexHist[idx][i];
+
+    return medianOfSmall(tmp, n);
+}
+
 void Control::setupHardware()
 {
     analogReadResolution(12);
@@ -247,6 +299,15 @@ void Control::setupHardware()
 
         flexFiltered[i] = 0.0f;
         flexRaw[i] = 0.0f;
+
+        flexStableInit[i] = false;
+        flexStableOhm[i] = 0.0f;
+
+        flexHistCount[i] = 0;
+        flexHistPos[i] = 0;
+        flexOutlierStrikes[i] = 0;
+        for (int k = 0; k < FLEX_HISTORY; ++k)
+            flexHist[i][k] = 0.0f;
     }
 
     fsrFiltered = 0.0f;
@@ -296,11 +357,98 @@ void Control::update()
             continue;
         }
 
-        flexRaw[i] = readResistance(cfg.flexPin, cfg.flexPullupOhm);
-        flexFiltered[i] = smooth(flexFiltered[i], flexRaw[i], 0.25f);
+        float rNew = readResistance(cfg.flexPin, cfg.flexPullupOhm);
 
-        tele.flexRawOhm[i] = flexRaw[i];
-        tele.flexFilteredOhm[i] = flexFiltered[i];
+        float rSample = rNew;
+        const int histN = (int)flexHistCount[i];
+
+        if (histN >= 3)
+        {
+            float med = medianFlexHistory(i);
+            if (med > 1.0f)
+            {
+                bool outlier = (rNew > med * 2.0f) || (rNew < med * 0.5f);
+                if (outlier)
+                {
+                    flexOutlierStrikes[i]++;
+                    if (flexOutlierStrikes[i] < 2)
+                    {
+                        rSample = med;
+                    }
+                    else
+                    {
+                        flexOutlierStrikes[i] = 0;
+                        rSample = rNew;
+                        pushFlexHistory(i, rSample);
+                    }
+                }
+                else
+                {
+                    flexOutlierStrikes[i] = 0;
+                    rSample = rNew;
+                    pushFlexHistory(i, rSample);
+                }
+            }
+            else
+            {
+                flexOutlierStrikes[i] = 0;
+                rSample = rNew;
+                pushFlexHistory(i, rSample);
+            }
+        }
+        else
+        {
+            flexOutlierStrikes[i] = 0;
+            rSample = rNew;
+            pushFlexHistory(i, rSample);
+        }
+
+        int pct = (int)cfg.flexTolerancePct;
+        if (pct < 1)
+            pct = 1;
+        if (pct > 50)
+            pct = 50;
+
+        if (!flexStableInit[i])
+        {
+            flexStableInit[i] = true;
+            flexStableOhm[i] = rSample;
+        }
+
+        float stable = flexStableOhm[i];
+        float tol = fabsf(stable) * (pct / 100.0f);
+        if (tol < 1.0f)
+            tol = 1.0f;
+
+        float diff = rSample - stable;
+
+        if (fabsf(diff) <= tol)
+        {
+        }
+        else
+        {
+            float sign = (diff >= 0.0f) ? 1.0f : -1.0f;
+
+            float target = stable + (diff - sign * tol);
+
+            float absMove = fabsf(target - stable);
+
+            float a = 0.20f;
+            if (absMove > 10.0f * tol)
+                a = 0.45f;
+            else if (absMove > 4.0f * tol)
+                a = 0.30f;
+
+            flexStableOhm[i] = smooth(stable, target, a);
+        }
+
+        float rFilt = flexStableOhm[i];
+
+        flexFiltered[i] = rFilt;
+        flexRaw[i] = rNew;
+
+        tele.flexRawOhm[i] = sanitizeResistanceForTelemetry(flexRaw[i]);
+        tele.flexFilteredOhm[i] = sanitizeResistanceForTelemetry(flexFiltered[i]);
 
         float targetAngle = flexToAngle(flexFiltered[i], i);
         updateServo(targetAngle, i);

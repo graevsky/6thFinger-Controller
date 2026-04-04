@@ -23,12 +23,15 @@ struct FlexSettings
     uint32_t flexStraightOhm = 65000;
     uint32_t flexBendOhm = 160000;
 
+    uint8_t flexTolerancePct = 5;
+
     void toJson(JsonVariant dst) const
     {
         dst["flexPin"] = flexPin;
         dst["flexPullupOhm"] = flexPullupOhm;
         dst["flexStraightOhm"] = flexStraightOhm;
         dst["flexBendOhm"] = flexBendOhm;
+        dst["flexTolerancePct"] = flexTolerancePct;
     }
 
     void applyJson(JsonVariantConst src)
@@ -41,11 +44,21 @@ struct FlexSettings
             flexStraightOhm = src["flexStraightOhm"];
         if (src.containsKey("flexBendOhm"))
             flexBendOhm = src["flexBendOhm"];
+
+        if (src.containsKey("flexTolerancePct"))
+        {
+            int v = src["flexTolerancePct"].as<int>();
+            if (v < 1)
+                v = 1;
+            if (v > 50)
+                v = 50;
+            flexTolerancePct = (uint8_t)v;
+        }
     }
 };
 
 struct ServoSettings
-{   
+{
     uint8_t servoPin = 21;
     uint8_t servoMinDeg = 40;
     uint8_t servoMaxDeg = 180;
@@ -118,6 +131,7 @@ struct Settings
             flex[i].flexPullupOhm = 0;
             flex[i].flexStraightOhm = 0;
             flex[i].flexBendOhm = 0;
+            flex[i].flexTolerancePct = 5;
 
             servo[i].servoPin = 0xFF;
         }
@@ -217,6 +231,15 @@ struct Settings
                 flex[0].flexStraightOhm = doc["flexStraightOhm"];
             if (doc.containsKey("flexBendOhm"))
                 flex[0].flexBendOhm = doc["flexBendOhm"];
+            if (doc.containsKey("flexTolerancePct"))
+            {
+                int v = doc["flexTolerancePct"].as<int>();
+                if (v < 1)
+                    v = 1;
+                if (v > 50)
+                    v = 50;
+                flex[0].flexTolerancePct = (uint8_t)v;
+            }
         }
 
         if (doc.containsKey("servoSettings"))
