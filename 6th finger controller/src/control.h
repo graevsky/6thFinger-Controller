@@ -33,6 +33,9 @@ public:
     const ControlTelemetry &getTelemetry() const { return tele; }
     const Settings &getSettings() const { return current; }
 
+    void liveServoSet(int idx, float deg);
+    void liveServoStop(int idx);
+
 private:
     Settings current{};
 
@@ -58,6 +61,12 @@ private:
     static constexpr float FSR_PRESS_ALPHA = 0.55f;
     static constexpr float FSR_RELEASE_ALPHA = 0.35f;
 
+    static constexpr int FLEX_SAMPLES = 8;
+
+    static constexpr int ADC_DUMMY_READS = 3;
+    static constexpr int ADC_SETTLE_US = 280;
+    uint8_t lastAdcPin = 0xFF;
+
     static constexpr int FLEX_HISTORY = 5;
     float flexHist[NUM_PAIRS][FLEX_HISTORY] = {};
     uint8_t flexHistCount[NUM_PAIRS] = {};
@@ -67,10 +76,16 @@ private:
     float flexStableOhm[NUM_PAIRS] = {};
     bool flexStableInit[NUM_PAIRS] = {};
 
+    static constexpr uint32_t LIVE_TTL_MS = 1200;
+    bool liveActive[NUM_PAIRS] = {};
+    uint32_t liveUntilMs[NUM_PAIRS] = {};
+    float liveDeg[NUM_PAIRS] = {};
+
     float smooth(float prev, float cur, float alpha);
 
-    int readAdcAvg(uint8_t pin, int samples);
-    float readResistance(uint8_t pin, uint32_t pullupOhm);
+    int readAdcAvgStable(uint8_t pin, int samples);
+
+    float readResistanceStable(uint8_t pin, uint32_t pullupOhm, int samples);
 
     float resistanceFromAdc(float adc, uint32_t pullupOhm) const;
     float sanitizeResistanceForTelemetry(float resistanceOhm) const;

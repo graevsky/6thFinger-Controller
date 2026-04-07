@@ -3,37 +3,63 @@
 
 static const int VIBRO_CHANNEL = 4;
 
+static float clampf(float v, float a, float b)
+{
+    if (v < a)
+        return a;
+    if (v > b)
+        return b;
+    return v;
+}
+
 float Control::smooth(float prev, float cur, float alpha)
 {
     return prev * (1.0f - alpha) + cur * alpha;
 }
 
-int Control::readAdcAvg(uint8_t pin, int samples)
+int Control::readAdcAvgStable(uint8_t pin, int samples)
 {
-    if (samples <= 1)
+    if (samples < 1)
+        samples = 1;
+
+    if (pin != lastAdcPin)
+    {
+        for (int i = 0; i < ADC_DUMMY_READS; ++i)
+        {
+            (void)analogRead(pin);
+            delayMicroseconds(ADC_SETTLE_US);
+        }
+        lastAdcPin = pin;
+    }
+
+    if (samples == 1)
         return analogRead(pin);
 
     uint32_t sum = 0;
     for (int i = 0; i < samples; ++i)
     {
         sum += analogRead(pin);
-        delayMicroseconds(120);
+        delayMicroseconds(110);
     }
 
-    return (int)(sum / samples);
+    return (int)(sum / (uint32_t)samples);
 }
 
-float Control::readResistance(uint8_t pin, uint32_t pullupOhm)
+float Control::readResistanceStable(uint8_t pin, uint32_t pullupOhm, int samples)
 {
     const float VCC = 3.3f;
 
-    int raw = analogRead(pin);
-    if (raw <= 0)
-        return 1e9f;
+    int raw = readAdcAvgStable(pin, samples);
+
+    if (raw < 1)
+        raw = 1;
+    if (raw > 4094)
+        raw = 4094;
 
     float v = (raw / 4095.0f) * VCC;
+
     if (v < 0.001f)
-        return 1e9f;
+        return INFINITY;
 
     return pullupOhm * (VCC / v - 1.0f);
 }
@@ -84,23 +110,10 @@ float Control::fsrToNewton(float resistanceOhm)
     float x = (logf(R_NO_TOUCH) - logf(resistanceOhm)) /
               (logf(R_NO_TOUCH) - logf(R_FULL_SCALE));
 
-    if (x < 0.0f)
-        x = 0.0f;
-    if (x > 1.0f)
-        x = 1.0f;
-
+    x = clampf(x, 0.0f, 1.0f);
     x = powf(x, 2.2f);
 
     return x * current.fsrHardMaxN;
-}
-
-static float clampf(float v, float a, float b)
-{
-    if (v < a)
-        return a;
-    if (v > b)
-        return b;
-    return v;
 }
 
 float Control::flexToAngle(float rohm, int idx) const
@@ -180,14 +193,47 @@ uint8_t Control::computeVibroDuty(float N, bool &outPulseMode)
     return (uint8_t)dutyF;
 }
 
+void Control::liveServoSet(int idx, float deg)
+{
+    if (idx < 0 || idx >= NUM_PAIRS)
+        return;
+
+    float a = clampf(deg, 0.0f, 180.0f);
+
+    liveActive[idx] = true;
+    liveDeg[idx] = a;
+    liveUntilMs[idx] = millis() + LIVE_TTL_MS;
+}
+
+void Control::liveServoStop(int idx)
+{
+    if (idx < 0 || idx >= NUM_PAIRS)
+        return;
+    liveActive[idx] = false;
+    liveUntilMs[idx] = 0;
+}
+
 void Control::updateServo(float targetAngleDeg, int idx)
 {
     ServoSettings &cfg = current.servo[idx];
 
-    tele.servoTargetDeg[idx] = targetAngleDeg;
-
     if (cfg.servoManual == ServoManualMode::Manual)
         targetAngleDeg = cfg.servoManualDeg;
+
+    if (liveActive[idx])
+    {
+        uint32_t now = millis();
+        if (now <= liveUntilMs[idx])
+        {
+            targetAngleDeg = liveDeg[idx];
+        }
+        else
+        {
+            liveActive[idx] = false;
+        }
+    }
+
+    tele.servoTargetDeg[idx] = targetAngleDeg;
 
     uint32_t now = millis();
     float dt = (now - lastServoUpdate[idx]) / 1000.0f;
@@ -284,10 +330,19 @@ void Control::setupHardware()
     analogReadResolution(12);
     analogSetAttenuation(ADC_11db);
 
+    analogSetPinAttenuation(current.fsrPin, ADC_11db);
+    for (int i = 0; i < NUM_PAIRS; ++i)
+    {
+        if (current.flex[i].flexPin != 0xFF && current.flex[i].flexPin != 0)
+            analogSetPinAttenuation(current.flex[i].flexPin, ADC_11db);
+    }
+
     pinMode(current.vibroPin, OUTPUT);
     ledcSetup(VIBRO_CHANNEL, current.vibroFreqHz, 8);
     ledcAttachPin(current.vibroPin, VIBRO_CHANNEL);
     ledcWrite(VIBRO_CHANNEL, 0);
+
+    lastAdcPin = 0xFF;
 
     uint32_t now = millis();
     for (int i = 0; i < NUM_PAIRS; ++i)
@@ -308,6 +363,10 @@ void Control::setupHardware()
         flexOutlierStrikes[i] = 0;
         for (int k = 0; k < FLEX_HISTORY; ++k)
             flexHist[i][k] = 0.0f;
+
+        liveActive[i] = false;
+        liveUntilMs[i] = 0;
+        liveDeg[i] = 0.0f;
     }
 
     fsrFiltered = 0.0f;
@@ -330,19 +389,9 @@ void Control::reconfigure(const Settings &s)
 
 void Control::update()
 {
-    int fsrAdcRaw = readAdcAvg(current.fsrPin, FSR_SAMPLES);
-
-    float alpha = (fsrAdcRaw > fsrAdcFiltered) ? FSR_PRESS_ALPHA : FSR_RELEASE_ALPHA;
-    fsrAdcFiltered = smooth(fsrAdcFiltered, (float)fsrAdcRaw, alpha);
-
-    fsrRaw = resistanceFromAdc((float)fsrAdcRaw, current.fsrPullupOhm);
-    fsrFiltered = resistanceFromAdc(fsrAdcFiltered, current.fsrPullupOhm);
-
-    tele.fsrRawOhm = sanitizeResistanceForTelemetry(fsrRaw);
-    tele.fsrFilteredOhm = sanitizeResistanceForTelemetry(fsrFiltered);
-
-    float forceN = fsrToNewton(fsrFiltered);
-    tele.fsrForceN = forceN;
+    const uint8_t vibroPrev = vibroDuty;
+    ledcWrite(VIBRO_CHANNEL, 0);
+    delayMicroseconds(900);
 
     for (int i = 0; i < NUM_PAIRS; ++i)
     {
@@ -357,7 +406,17 @@ void Control::update()
             continue;
         }
 
-        float rNew = readResistance(cfg.flexPin, cfg.flexPullupOhm);
+        float rNew = readResistanceStable(cfg.flexPin, cfg.flexPullupOhm, FLEX_SAMPLES);
+
+        const float st = (float)cfg.flexStraightOhm;
+        const float bd = (float)cfg.flexBendOhm;
+        const float lo = fminf(st, bd) * 0.40f;
+        const float hi = fmaxf(st, bd) * 2.50f;
+
+        if (!isfinite(rNew) || rNew < lo || rNew > hi)
+        {
+            rNew = flexStableInit[i] ? flexStableOhm[i] : (st > 1.0f ? st : 50000.0f);
+        }
 
         float rSample = rNew;
         const int histN = (int)flexHistCount[i];
@@ -422,13 +481,9 @@ void Control::update()
 
         float diff = rSample - stable;
 
-        if (fabsf(diff) <= tol)
-        {
-        }
-        else
+        if (fabsf(diff) > tol)
         {
             float sign = (diff >= 0.0f) ? 1.0f : -1.0f;
-
             float target = stable + (diff - sign * tol);
 
             float absMove = fabsf(target - stable);
@@ -454,7 +509,23 @@ void Control::update()
         updateServo(targetAngle, i);
     }
 
+    int fsrAdcRaw = readAdcAvgStable(current.fsrPin, FSR_SAMPLES);
+
+    float alpha = (fsrAdcRaw > fsrAdcFiltered) ? FSR_PRESS_ALPHA : FSR_RELEASE_ALPHA;
+    fsrAdcFiltered = smooth(fsrAdcFiltered, (float)fsrAdcRaw, alpha);
+
+    fsrRaw = resistanceFromAdc((float)fsrAdcRaw, current.fsrPullupOhm);
+    fsrFiltered = resistanceFromAdc(fsrAdcFiltered, current.fsrPullupOhm);
+
+    tele.fsrRawOhm = sanitizeResistanceForTelemetry(fsrRaw);
+    tele.fsrFilteredOhm = sanitizeResistanceForTelemetry(fsrFiltered);
+
+    float forceN = fsrToNewton(fsrFiltered);
+    tele.fsrForceN = forceN;
+
     bool pulseMode = false;
     uint8_t duty = computeVibroDuty(forceN, pulseMode);
     updateVibro(duty);
+
+    (void)vibroPrev;
 }

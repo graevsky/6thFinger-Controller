@@ -131,6 +131,18 @@ public:
     }
 };
 
+class ServoLiveCB : public NimBLECharacteristicCallbacks
+{
+public:
+    BleApp *app;
+    ServoLiveCB(BleApp *a) : app(a) {}
+
+    void onWrite(NimBLECharacteristic *c) override
+    {
+        app->handleServoLive(c->getValue());
+    }
+};
+
 class ConnCB : public NimBLEServerCallbacks
 {
 public:
@@ -148,6 +160,8 @@ public:
         app->pendingAckOk = true;
         app->pendingAckAtMs = 0;
 
+        app->setPendingAckMeta(nullptr, -1);
+
         app->telePauseUntilMs = millis() + 800;
 
         app->authed = (app->current.pinCode == 0);
@@ -162,6 +176,8 @@ public:
         app->pendingSendAck = false;
         app->pendingAckOk = true;
         app->pendingAckAtMs = 0;
+
+        app->setPendingAckMeta(nullptr, -1);
 
         app->authed = false;
 
@@ -192,6 +208,11 @@ void BleApp::setupBLE()
     chTele = svc->createCharacteristic(
         "6F1A0004-0000-4A4A-AA00-001122334400",
         NIMBLE_PROPERTY::NOTIFY);
+
+    chServoLive = svc->createCharacteristic(
+        "6F1A0005-0000-4A4A-AA00-001122334400",
+        NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::WRITE_NR);
+    chServoLive->setCallbacks(new ServoLiveCB(this));
 
     svc->start();
 }
@@ -236,28 +257,23 @@ void BleApp::sendConfig()
         doc.remove("pinCode");
     }
 
-    String payload;
-    serializeJson(doc, payload);
-
-    Serial.println("========== CFG_SEND ==========");
-    Serial.print("CFG_JSON: ");
-    Serial.println(payload);
-    Serial.println("==================================");
-
     sendJsonChunked(doc, chCfgOut, /*pauseTele=*/true, /*useIndicate=*/true);
 }
 
-void BleApp::sendAck(bool ok)
+void BleApp::sendAck(bool ok, const char *forTag, int teleEnabledVal)
 {
     if (chAck == nullptr)
         return;
 
-    StaticJsonDocument<64> doc;
+    StaticJsonDocument<96> doc;
     doc["type"] = "ack";
     doc["ok"] = ok;
 
-    Serial.print("SEND_ACK ok=");
-    Serial.println(ok ? "true" : "false");
+    if (forTag && forTag[0])
+        doc["for"] = forTag;
+
+    if (teleEnabledVal >= 0)
+        doc["enabled"] = (teleEnabledVal != 0);
 
     sendJsonChunked(doc, chAck, /*pauseTele=*/true, /*useIndicate=*/true);
 }
@@ -270,9 +286,6 @@ void BleApp::sendAuthAck(bool ok)
     StaticJsonDocument<96> doc;
     doc["type"] = "auth";
     doc["ok"] = ok;
-
-    Serial.print("SEND_AUTH ok=");
-    Serial.println(ok ? "true" : "false");
 
     sendJsonChunked(doc, chAck, /*pauseTele=*/true, /*useIndicate=*/true);
 }
@@ -289,12 +302,48 @@ void BleApp::applyIncomingJson(const JsonDocument &doc)
         onSettingsChanged(current);
 }
 
+void BleApp::handleServoLive(const std::string &s)
+{
+    if (!isAuthed() && current.pinCode != 0)
+        return;
+
+    if (s.empty())
+        return;
+
+    int idx = -1;
+    int deg = -1;
+
+    const char *c = s.c_str();
+
+    if (sscanf(c, "A,%d,%d", &idx, &deg) == 2)
+    {
+        if (idx < 0 || idx >= NUM_PAIRS)
+            return;
+        if (deg < 0)
+            deg = 0;
+        if (deg > 180)
+            deg = 180;
+
+        if (onServoLive)
+            onServoLive(idx, deg, false);
+
+        return;
+    }
+
+    if (sscanf(c, "S,%d", &idx) == 1)
+    {
+        if (idx < 0 || idx >= NUM_PAIRS)
+            return;
+
+        if (onServoLive)
+            onServoLive(idx, 0, true);
+
+        return;
+    }
+}
+
 void BleApp::handleChunk(const std::string &s)
 {
-    Serial.print("CHUNK: '");
-    Serial.print(s.c_str());
-    Serial.println("'");
-
     if (s == "[BEGIN]")
     {
         receivingChunks = true;
@@ -309,23 +358,15 @@ void BleApp::handleChunk(const std::string &s)
         String json = chunkBuffer;
         chunkBuffer = "";
 
-        Serial.println("========== CFG_IN RECEIVED ==========");
-        Serial.print("CFG_IN_JSON: ");
-        Serial.println(json);
-        Serial.println("=====================================");
-
         StaticJsonDocument<2048> doc;
         auto err = deserializeJson(doc, json);
         if (err)
         {
-            Serial.print("JSON parse error: ");
-            Serial.println(err.c_str());
-            Serial.print("RAW JSON: ");
-            Serial.println(json);
-
             pendingAckOk = false;
             pendingSendAck = true;
             pendingAckAtMs = millis();
+
+            setPendingAckMeta("cfg_parse", -1);
             return;
         }
 
@@ -386,6 +427,8 @@ void BleApp::handleChunk(const std::string &s)
             pendingAckOk = true;
             pendingSendAck = true;
             pendingAckAtMs = millis();
+
+            setPendingAckMeta("cfg_ok", -1);
             return;
         }
 
@@ -396,6 +439,8 @@ void BleApp::handleChunk(const std::string &s)
             pendingAckOk = true;
             pendingSendAck = true;
             pendingAckAtMs = millis() + ACK_DELAY_MS;
+
+            setPendingAckMeta("cfg_get", -1);
             return;
         }
 
@@ -406,11 +451,11 @@ void BleApp::handleChunk(const std::string &s)
                 pendingAckOk = false;
                 pendingSendAck = true;
                 pendingAckAtMs = millis() + ACK_DELAY_MS;
+                setPendingAckMeta("reboot", -1);
                 return;
             }
 
-            sendAck(true);
-
+            sendAck(true, "reboot", -1);
             delay(250);
             ESP.restart();
             return;
@@ -423,6 +468,7 @@ void BleApp::handleChunk(const std::string &s)
                 pendingAckOk = false;
                 pendingSendAck = true;
                 pendingAckAtMs = millis() + ACK_DELAY_MS;
+                setPendingAckMeta("tele_set", -1);
                 return;
             }
 
@@ -432,6 +478,8 @@ void BleApp::handleChunk(const std::string &s)
             pendingAckOk = true;
             pendingSendAck = true;
             pendingAckAtMs = millis() + ACK_DELAY_MS;
+
+            setPendingAckMeta("tele_set", en ? 1 : 0);
             return;
         }
 
@@ -440,6 +488,8 @@ void BleApp::handleChunk(const std::string &s)
             pendingAckOk = false;
             pendingSendAck = true;
             pendingAckAtMs = millis() + ACK_DELAY_MS;
+
+            setPendingAckMeta("auth", -1);
             return;
         }
 
@@ -450,6 +500,8 @@ void BleApp::handleChunk(const std::string &s)
         pendingAckOk = true;
         pendingSendAck = true;
         pendingAckAtMs = millis() + ACK_DELAY_MS;
+
+        setPendingAckMeta("cfg_set", -1);
         return;
     }
 
@@ -475,7 +527,6 @@ void BleApp::sendJsonChunked(
     {
         if (xSemaphoreTake(txMutex, pdMS_TO_TICKS(4000)) != pdTRUE)
         {
-            Serial.println("sendJsonChunked: TX mutex timeout");
             return;
         }
     }
@@ -494,17 +545,6 @@ void BleApp::sendJsonChunked(
             callIndicate(ch);
         else
             callNotify(ch);
-
-        const char *tag =
-            (ch == chCfgOut) ? "CFG" : (ch == chAck) ? "ACK"
-                                   : (ch == chTele)  ? "TELE"
-                                                     : "UNK";
-
-        Serial.print("TX_");
-        Serial.print(tag);
-        Serial.print("_CHUNK: '");
-        Serial.print(s);
-        Serial.println("'");
 
         delay(dly);
         yield();
@@ -598,9 +638,17 @@ void BleApp::loop()
     if (pendingSendAck && (pendingAckAtMs == 0 || now >= pendingAckAtMs))
     {
         const bool ok = pendingAckOk;
+
+        char forTag[16] = {0};
+        if (pendingAckFor[0])
+            strncpy(forTag, pendingAckFor, sizeof(forTag) - 1);
+        const int teleVal = pendingAckTeleVal;
+
         pendingSendAck = false;
         pendingAckAtMs = 0;
-        sendAck(ok);
+        setPendingAckMeta(nullptr, -1);
+
+        sendAck(ok, (forTag[0] ? forTag : nullptr), teleVal);
     }
 
     if (!teleEnabled)

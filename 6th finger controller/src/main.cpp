@@ -22,6 +22,15 @@ void setup()
     Serial.println("========== BOOT ==========");
 
     ble.onSettingsChanged = onSettingsChanged;
+
+    ble.onServoLive = [](int idx, int deg, bool stop)
+    {
+        if (stop)
+            ctrl.liveServoStop(idx);
+        else
+            ctrl.liveServoSet(idx, (float)deg);
+    };
+
     ble.begin("ESP32-Flex6");
 
     ctrl.begin(ble.getSettings());
@@ -32,10 +41,6 @@ void setup()
 void loop()
 {
     ctrl.update();
-
-    {
-        const ControlTelemetry &t = ctrl.getTelemetry();
-    }
 
     ble.sendTelemetry(ctrl.getTelemetry());
     ble.loop();

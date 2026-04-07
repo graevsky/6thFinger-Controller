@@ -15,6 +15,7 @@
 
 class CfgInCB;
 class ConnCB;
+class ServoLiveCB;
 
 class BleApp
 {
@@ -30,9 +31,12 @@ public:
 
     std::function<void(const Settings &)> onSettingsChanged;
 
+    std::function<void(int idx, int deg, bool stop)> onServoLive;
+
 private:
     friend class CfgInCB;
     friend class ConnCB;
+    friend class ServoLiveCB;
 
     NimBLEServer *server = nullptr;
 
@@ -40,6 +44,8 @@ private:
     NimBLECharacteristic *chCfgOut = nullptr;
     NimBLECharacteristic *chAck = nullptr;
     NimBLECharacteristic *chTele = nullptr;
+
+    NimBLECharacteristic *chServoLive = nullptr;
 
     Settings current{};
     Preferences nvs;
@@ -64,6 +70,9 @@ private:
     volatile bool pendingAckOk = true;
     volatile uint32_t pendingAckAtMs = 0;
 
+    char pendingAckFor[16] = {0};
+    volatile int pendingAckTeleVal = -1;
+
     static constexpr uint32_t ACK_DELAY_MS = 250;
     static constexpr uint32_t PAUSE_TELE_MS = 6000;
 
@@ -87,6 +96,7 @@ private:
     void startAdvertising();
 
     void handleChunk(const std::string &s);
+    void handleServoLive(const std::string &s);
 
     void sendJsonChunked(
         const JsonDocument &doc,
@@ -96,7 +106,8 @@ private:
 
     void applyIncomingJson(const JsonDocument &doc);
     void sendConfig();
-    void sendAck(bool ok);
+
+    void sendAck(bool ok, const char *forTag = nullptr, int teleEnabledVal = -1);
 
     void sendAuthAck(bool ok);
 
@@ -106,4 +117,19 @@ private:
 
     static void callNotify(NimBLECharacteristic *ch);
     static void callIndicate(NimBLECharacteristic *ch);
+
+private:
+    inline void setPendingAckMeta(const char *forTag, int teleVal = -1)
+    {
+        if (forTag)
+        {
+            strncpy(pendingAckFor, forTag, sizeof(pendingAckFor) - 1);
+            pendingAckFor[sizeof(pendingAckFor) - 1] = 0;
+        }
+        else
+        {
+            pendingAckFor[0] = 0;
+        }
+        pendingAckTeleVal = teleVal;
+    }
 };
