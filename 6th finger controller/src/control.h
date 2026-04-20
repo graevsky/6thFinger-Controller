@@ -2,24 +2,8 @@
 #include <Arduino.h>
 #include <ESP32Servo.h>
 #include "settings.h"
-
-struct ControlTelemetry
-{
-    float flexRawOhm[NUM_PAIRS] = {};
-    float flexFilteredOhm[NUM_PAIRS] = {};
-
-    float fsrRawOhm = 0.0f;
-    float fsrFilteredOhm = 0.0f;
-    float fsrForceN = 0.0f;
-
-    float servoTargetDeg[NUM_PAIRS] = {};
-    float servoCurrentDeg[NUM_PAIRS] = {};
-    float servoSpeedDps[NUM_PAIRS] = {};
-
-    uint8_t vibroDuty = 0;
-    bool vibroActive = false;
-    VibroMode vibroMode = VibroMode::Normal;
-};
+#include "telemetry.h"
+#include "emg_engine.h"
 
 class Control
 {
@@ -54,6 +38,7 @@ private:
     uint8_t vibroDuty = 0;
 
     ControlTelemetry tele{};
+    EmgEngine emg;
 
     static constexpr int FSR_SAMPLES = 8;
     static constexpr int FSR_OPEN_ADC = 6;
@@ -81,10 +66,14 @@ private:
     uint32_t liveUntilMs[NUM_PAIRS] = {};
     float liveDeg[NUM_PAIRS] = {};
 
+private:
+    static int adcReadBridge(void *ctx, uint8_t pin, int samples);
+
+    bool isValidPin(uint8_t pin) const;
+
     float smooth(float prev, float cur, float alpha);
 
     int readAdcAvgStable(uint8_t pin, int samples);
-
     float readResistanceStable(uint8_t pin, uint32_t pullupOhm, int samples);
 
     float resistanceFromAdc(float adc, uint32_t pullupOhm) const;
@@ -99,7 +88,6 @@ private:
     void updateVibro(uint8_t duty);
     void setupHardware();
 
-private:
     void pushFlexHistory(int idx, float v);
     float medianFlexHistory(int idx) const;
 };

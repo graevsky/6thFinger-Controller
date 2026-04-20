@@ -1,6 +1,75 @@
 #include "control.h"
 #include <math.h>
 
+// ================= FLEX ADC MOCK =================
+#define ENABLE_FLEX_ADC_MOCK 1
+
+#if ENABLE_FLEX_ADC_MOCK
+static constexpr uint8_t MOCK_FLEX_PIN = 32;
+static constexpr float MOCK_R_FLAT_OHM = 30000.0f;
+static constexpr float MOCK_R_BENT_OHM = 100000.0f;
+static constexpr uint32_t MOCK_T_FLAT_MS = 5000;
+static constexpr uint32_t MOCK_T_RAMP_MS = 3000;
+static constexpr uint32_t MOCK_T_BENT_MS = 5000;
+static constexpr uint32_t MOCK_T_BACK_MS = 3000;
+static uint32_t g_mockPullOhm = 47000;
+
+static float mockFlexResistanceOhm()
+{
+    const uint32_t period =
+        MOCK_T_FLAT_MS + MOCK_T_RAMP_MS + MOCK_T_BENT_MS + MOCK_T_BACK_MS;
+
+    uint32_t t = millis() % period;
+
+    if (t < MOCK_T_FLAT_MS)
+        return MOCK_R_FLAT_OHM;
+    t -= MOCK_T_FLAT_MS;
+
+    if (t < MOCK_T_RAMP_MS)
+    {
+        float k = (float)t / (float)MOCK_T_RAMP_MS;
+        return MOCK_R_FLAT_OHM + (MOCK_R_BENT_OHM - MOCK_R_FLAT_OHM) * k;
+    }
+    t -= MOCK_T_RAMP_MS;
+
+    if (t < MOCK_T_BENT_MS)
+        return MOCK_R_BENT_OHM;
+    t -= MOCK_T_BENT_MS;
+
+    float k = (float)t / (float)MOCK_T_BACK_MS;
+    return MOCK_R_BENT_OHM + (MOCK_R_FLAT_OHM - MOCK_R_BENT_OHM) * k;
+}
+
+static int mockFlexAdcRaw()
+{
+    float R = mockFlexResistanceOhm();
+    float pull = (float)g_mockPullOhm;
+
+    if (pull < 1.0f)
+        pull = 47000.0f;
+
+    float ratio = pull / (pull + R);
+    int raw = (int)lroundf(ratio * 4095.0f);
+
+    if (raw < 0)
+        raw = 0;
+    if (raw > 4095)
+        raw = 4095;
+    return raw;
+}
+
+static int analogReadMock(uint8_t pin)
+{
+    if (pin == MOCK_FLEX_PIN)
+        return mockFlexAdcRaw();
+
+    return (int)::analogRead(pin);
+}
+
+#define analogRead(pin) analogReadMock((uint8_t)(pin))
+#endif
+// ================= /FLEX ADC MOCK =================
+
 static const int VIBRO_CHANNEL = 4;
 
 static float clampf(float v, float a, float b)
@@ -10,6 +79,18 @@ static float clampf(float v, float a, float b)
     if (v > b)
         return b;
     return v;
+}
+
+int Control::adcReadBridge(void *ctx, uint8_t pin, int samples)
+{
+    if (ctx == nullptr)
+        return 0;
+    return ((Control *)ctx)->readAdcAvgStable(pin, samples);
+}
+
+bool Control::isValidPin(uint8_t pin) const
+{
+    return pin != 0 && pin != UNUSED_PIN;
 }
 
 float Control::smooth(float prev, float cur, float alpha)
@@ -330,11 +411,21 @@ void Control::setupHardware()
     analogReadResolution(12);
     analogSetAttenuation(ADC_11db);
 
-    analogSetPinAttenuation(current.fsrPin, ADC_11db);
+    if (isValidPin(current.fsrPin))
+        analogSetPinAttenuation(current.fsrPin, ADC_11db);
+
     for (int i = 0; i < NUM_PAIRS; ++i)
     {
-        if (current.flex[i].flexPin != 0xFF && current.flex[i].flexPin != 0)
+        if (isValidPin(current.flex[i].flexPin))
             analogSetPinAttenuation(current.flex[i].flexPin, ADC_11db);
+
+        const EmgSettings &emgCfg = current.emg[i];
+        const uint8_t pins[3] = {emgCfg.pin0, emgCfg.pin1, emgCfg.pin2};
+        for (uint8_t ch = 0; ch < emgCfg.channels && ch < 3; ++ch)
+        {
+            if (isValidPin(pins[ch]))
+                analogSetPinAttenuation(pins[ch], ADC_11db);
+        }
     }
 
     pinMode(current.vibroPin, OUTPUT);
@@ -373,6 +464,9 @@ void Control::setupHardware()
     fsrRaw = 0.0f;
     fsrAdcFiltered = 0.0f;
     vibroDuty = 0;
+
+    emg.setAdcReader(&Control::adcReadBridge, this);
+    emg.reset(current, tele);
 }
 
 void Control::begin(const Settings &s)
@@ -393,29 +487,70 @@ void Control::update()
     ledcWrite(VIBRO_CHANNEL, 0);
     delayMicroseconds(900);
 
+    const uint32_t nowMs = millis();
+
     for (int i = 0; i < NUM_PAIRS; ++i)
     {
-        const FlexSettings &cfg = current.flex[i];
+        const InputSource source = current.pairInput[i].inputSource;
         const ServoSettings &sCfg = current.servo[i];
+        const FlexSettings &fCfg = current.flex[i];
 
-        if (cfg.flexPin == 0xFF || sCfg.servoPin == 0xFF ||
-            cfg.flexPin == 0 || sCfg.servoPin == 0)
+        tele.emgSource[i] = (int8_t)source;
+
+        if (!isValidPin(sCfg.servoPin))
+        {
+            emg.setTelemetryInactive(tele, i);
+            if (servos[i].attached())
+                servos[i].detach();
+            continue;
+        }
+
+        if (source == InputSource::Emg)
+        {
+            if (!emg.isPairConfigured(current, i))
+            {
+                emg.setTelemetryInactive(tele, i);
+                if (servos[i].attached())
+                    servos[i].detach();
+                continue;
+            }
+
+            emg.updatePair(i, current, nowMs, tele);
+            float targetAngle = emg.targetAngleForPair(current, i);
+            updateServo(targetAngle, i);
+            continue;
+        }
+
+        emg.setTelemetryInactive(tele, i);
+
+        if (!isValidPin(fCfg.flexPin))
         {
             if (servos[i].attached())
                 servos[i].detach();
             continue;
         }
 
-        float rNew = readResistanceStable(cfg.flexPin, cfg.flexPullupOhm, FLEX_SAMPLES);
+#if ENABLE_FLEX_ADC_MOCK
+        const bool mockActive = (fCfg.flexPin == MOCK_FLEX_PIN);
+        if (mockActive && fCfg.flexPullupOhm > 0)
+            g_mockPullOhm = fCfg.flexPullupOhm;
+#else
+        const bool mockActive = false;
+#endif
 
-        const float st = (float)cfg.flexStraightOhm;
-        const float bd = (float)cfg.flexBendOhm;
-        const float lo = fminf(st, bd) * 0.40f;
-        const float hi = fmaxf(st, bd) * 2.50f;
+        float rNew = readResistanceStable(fCfg.flexPin, fCfg.flexPullupOhm, FLEX_SAMPLES);
 
-        if (!isfinite(rNew) || rNew < lo || rNew > hi)
+        if (!mockActive)
         {
-            rNew = flexStableInit[i] ? flexStableOhm[i] : (st > 1.0f ? st : 50000.0f);
+            const float st = (float)fCfg.flexStraightOhm;
+            const float bd = (float)fCfg.flexBendOhm;
+            const float lo = fminf(st, bd) * 0.40f;
+            const float hi = fmaxf(st, bd) * 2.50f;
+
+            if (!isfinite(rNew) || rNew < lo || rNew > hi)
+            {
+                rNew = flexStableInit[i] ? flexStableOhm[i] : (st > 1.0f ? st : 50000.0f);
+            }
         }
 
         float rSample = rNew;
@@ -462,7 +597,7 @@ void Control::update()
             pushFlexHistory(i, rSample);
         }
 
-        int pct = (int)cfg.flexTolerancePct;
+        int pct = (int)fCfg.flexTolerancePct;
         if (pct < 1)
             pct = 1;
         if (pct > 50)

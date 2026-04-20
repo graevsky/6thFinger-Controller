@@ -9,7 +9,7 @@
 #include "freertos/semphr.h"
 
 #include "settings.h"
-#include "control.h"
+#include "telemetry.h"
 
 #define BLE_LED_PIN 2
 
@@ -30,7 +30,6 @@ public:
     const Settings &getSettings() const { return current; }
 
     std::function<void(const Settings &)> onSettingsChanged;
-
     std::function<void(int idx, int deg, bool stop)> onServoLive;
 
 private:
@@ -44,7 +43,6 @@ private:
     NimBLECharacteristic *chCfgOut = nullptr;
     NimBLECharacteristic *chAck = nullptr;
     NimBLECharacteristic *chTele = nullptr;
-
     NimBLECharacteristic *chServoLive = nullptr;
 
     Settings current{};
@@ -53,7 +51,7 @@ private:
     bool receivingChunks = false;
     String chunkBuffer;
 
-    StaticJsonDocument<2048> teleJson;
+    StaticJsonDocument<4096> teleJson;
     bool teleDirty = false;
     uint32_t lastTeleSend = 0;
 
@@ -108,7 +106,6 @@ private:
     void sendConfig();
 
     void sendAck(bool ok, const char *forTag = nullptr, int teleEnabledVal = -1);
-
     void sendAuthAck(bool ok);
 
     void makeTelemetryJson(const ControlTelemetry &t);

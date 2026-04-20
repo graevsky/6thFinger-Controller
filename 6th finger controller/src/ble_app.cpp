@@ -1,5 +1,4 @@
 #include "ble_app.h"
-#include "control.h"
 
 static void ledSet(bool on)
 {
@@ -62,7 +61,7 @@ void BleApp::loadSettings()
     String raw = nvs.getString("json", "");
     if (raw.length() > 0)
     {
-        StaticJsonDocument<2048> doc;
+        StaticJsonDocument<4096> doc;
         auto err = deserializeJson(doc, raw);
         if (!err)
         {
@@ -108,7 +107,7 @@ void BleApp::saveSettings()
 {
     nvs.begin("cfg", false);
 
-    StaticJsonDocument<2048> doc;
+    StaticJsonDocument<4096> doc;
     current.toJson(doc);
     String raw;
     serializeJson(doc, raw);
@@ -245,7 +244,7 @@ void BleApp::sendConfig()
     if (chCfgOut == nullptr)
         return;
 
-    StaticJsonDocument<2048> doc;
+    StaticJsonDocument<4096> doc;
     current.toJson(doc);
 
     doc["type"] = "cfg";
@@ -253,9 +252,7 @@ void BleApp::sendConfig()
     doc["authRequired"] = (!isAuthed() && current.pinCode != 0);
 
     if (!isAuthed() && current.pinCode != 0)
-    {
         doc.remove("pinCode");
-    }
 
     sendJsonChunked(doc, chCfgOut, /*pauseTele=*/true, /*useIndicate=*/true);
 }
@@ -358,7 +355,7 @@ void BleApp::handleChunk(const std::string &s)
         String json = chunkBuffer;
         chunkBuffer = "";
 
-        StaticJsonDocument<2048> doc;
+        StaticJsonDocument<4096> doc;
         auto err = deserializeJson(doc, json);
         if (err)
         {
@@ -519,16 +516,12 @@ void BleApp::sendJsonChunked(
         return;
 
     if (pauseTele)
-    {
         telePauseUntilMs = millis() + PAUSE_TELE_MS;
-    }
 
     if (txMutex != nullptr)
     {
         if (xSemaphoreTake(txMutex, pdMS_TO_TICKS(4000)) != pdTRUE)
-        {
             return;
-        }
     }
 
     String payload;
@@ -553,9 +546,7 @@ void BleApp::sendJsonChunked(
     sendPart("[BEGIN]");
 
     for (int i = 0; i < (int)payload.length(); i += CHUNK_BYTES)
-    {
         sendPart(payload.substring(i, i + CHUNK_BYTES));
-    }
 
     sendPart("[END]");
 
@@ -571,22 +562,28 @@ void BleApp::makeTelemetryJson(const ControlTelemetry &t)
 
     for (int i = 0; i < NUM_PAIRS; ++i)
     {
+        const InputSource source = current.pairInput[i].inputSource;
         const FlexSettings &fCfg = current.flex[i];
         const ServoSettings &sCfg = current.servo[i];
+        const EmgSettings &eCfg = current.emg[i];
 
-        if (fCfg.flexPin == 0xFF || sCfg.servoPin == 0xFF ||
-            fCfg.flexPin == 0 || sCfg.servoPin == 0)
-        {
+        const bool servoValid = (sCfg.servoPin != UNUSED_PIN && sCfg.servoPin != 0);
+        const bool flexValid = (fCfg.flexPin != UNUSED_PIN && fCfg.flexPin != 0);
+        const bool emgValid = eCfg.activePinsValid();
+
+        bool includePair = false;
+        if (source == InputSource::Emg)
+            includePair = servoValid || emgValid || t.emgChannelCount[i] > 0;
+        else
+            includePair = servoValid || flexValid;
+
+        if (!includePair)
             continue;
-        }
 
-        char key[20];
+        char key[28];
 
-        snprintf(key, sizeof(key), "flex_raw_%d", i);
-        teleJson[key] = t.flexRawOhm[i];
-
-        snprintf(key, sizeof(key), "flex_filt_%d", i);
-        teleJson[key] = t.flexFilteredOhm[i];
+        snprintf(key, sizeof(key), "emg_source_%d", i);
+        teleJson[key] = t.emgSource[i];
 
         snprintf(key, sizeof(key), "servo_target_%d", i);
         teleJson[key] = t.servoTargetDeg[i];
@@ -596,6 +593,47 @@ void BleApp::makeTelemetryJson(const ControlTelemetry &t)
 
         snprintf(key, sizeof(key), "servo_speed_%d", i);
         teleJson[key] = t.servoSpeedDps[i];
+
+        if (source == InputSource::Emg)
+        {
+            snprintf(key, sizeof(key), "emg_mode_%d", i);
+            teleJson[key] = t.emgMode[i];
+
+            snprintf(key, sizeof(key), "emg_channels_%d", i);
+            teleJson[key] = t.emgChannelCount[i];
+
+            snprintf(key, sizeof(key), "emg_event_%d", i);
+            teleJson[key] = t.emgEvent[i];
+
+            snprintf(key, sizeof(key), "emg_action_%d", i);
+            teleJson[key] = t.emgAction[i];
+
+            snprintf(key, sizeof(key), "emg_cooldown_ms_%d", i);
+            teleJson[key] = t.emgCooldownMs[i];
+
+            snprintf(key, sizeof(key), "emg_bend_progress_%d", i);
+            teleJson[key] = t.emgBendProgress[i];
+
+            snprintf(key, sizeof(key), "emg_unfold_progress_%d", i);
+            teleJson[key] = t.emgUnfoldProgress[i];
+
+            snprintf(key, sizeof(key), "emg_ch0_%d", i);
+            teleJson[key] = t.emgCh0[i];
+
+            snprintf(key, sizeof(key), "emg_ch1_%d", i);
+            teleJson[key] = t.emgCh1[i];
+
+            snprintf(key, sizeof(key), "emg_ch2_%d", i);
+            teleJson[key] = t.emgCh2[i];
+        }
+        else
+        {
+            snprintf(key, sizeof(key), "flex_raw_%d", i);
+            teleJson[key] = t.flexRawOhm[i];
+
+            snprintf(key, sizeof(key), "flex_filt_%d", i);
+            teleJson[key] = t.flexFilteredOhm[i];
+        }
     }
 
     teleJson["fsr_raw"] = t.fsrRawOhm;
@@ -655,7 +693,6 @@ void BleApp::loop()
         return;
     if (!teleDirty)
         return;
-
     if (now < telePauseUntilMs)
         return;
     if (now - lastTeleSend < TELE_MIN_PERIOD_MS)

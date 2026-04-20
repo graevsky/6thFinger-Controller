@@ -3,6 +3,7 @@
 #include <ArduinoJson.h>
 
 static const int NUM_PAIRS = 4;
+static const uint8_t UNUSED_PIN = 0xFF;
 
 enum class VibroMode : uint8_t
 {
@@ -16,13 +17,40 @@ enum class ServoManualMode : uint8_t
     Manual = 1
 };
 
+enum class InputSource : uint8_t
+{
+    Flex = 0,
+    Emg = 1
+};
+
+enum class EmgMode : uint8_t
+{
+    BendOther = 0,
+    Directional = 1
+};
+
+enum class EmgEvent : uint8_t
+{
+    None = 0,
+    Other = 1,
+    Bend = 2,
+    Unfold = 3
+};
+
+enum class EmgAction : uint8_t
+{
+    None = 0,
+    Bend = 1,
+    Unfold = 2,
+    CooldownIgnored = 3
+};
+
 struct FlexSettings
 {
     uint8_t flexPin = 32;
     uint32_t flexPullupOhm = 47000;
     uint32_t flexStraightOhm = 65000;
     uint32_t flexBendOhm = 160000;
-
     uint8_t flexTolerancePct = 5;
 
     void toJson(JsonVariant dst) const
@@ -93,19 +121,162 @@ struct ServoSettings
     }
 };
 
+struct PairInputSettings
+{
+    InputSource inputSource = InputSource::Flex;
+
+    void toJson(JsonVariant dst) const
+    {
+        dst["inputSource"] = (uint8_t)inputSource;
+    }
+
+    void applyJson(JsonVariantConst src)
+    {
+        if (src.containsKey("inputSource"))
+        {
+            int v = src["inputSource"].as<int>();
+            if (v < (int)InputSource::Flex)
+                v = (int)InputSource::Flex;
+            if (v > (int)InputSource::Emg)
+                v = (int)InputSource::Emg;
+            inputSource = (InputSource)v;
+        }
+    }
+};
+
+struct EmgSettings
+{
+    uint8_t channels = 1;
+    uint8_t pin0 = UNUSED_PIN;
+    uint8_t pin1 = UNUSED_PIN;
+    uint8_t pin2 = UNUSED_PIN;
+    EmgMode mode = EmgMode::BendOther;
+    uint8_t bendFullMoves = 1;
+    uint8_t unfoldFullMoves = 1;
+    uint8_t minSwitchDelaySec = 1;
+    bool reverseDirection = false;
+
+    void toJson(JsonVariant dst) const
+    {
+        dst["channels"] = channels;
+        JsonArray pins = dst.createNestedArray("pins");
+        pins.add(pin0);
+        pins.add(pin1);
+        pins.add(pin2);
+        dst["mode"] = (uint8_t)mode;
+        dst["bendFullMoves"] = bendFullMoves;
+        dst["unfoldFullMoves"] = unfoldFullMoves;
+        dst["minSwitchDelaySec"] = minSwitchDelaySec;
+        dst["reverseDirection"] = reverseDirection;
+    }
+
+    void applyJson(JsonVariantConst src)
+    {
+        if (src.containsKey("channels"))
+        {
+            int v = src["channels"].as<int>();
+            if (v < 1)
+                v = 1;
+            if (v > 3)
+                v = 3;
+            channels = (uint8_t)v;
+        }
+
+        if (src.containsKey("pins"))
+        {
+            JsonVariantConst pins = src["pins"];
+            if (pins.is<JsonArrayConst>())
+            {
+                JsonArrayConst arr = pins.as<JsonArrayConst>();
+                if (arr.size() > 0)
+                    pin0 = arr[0];
+                if (arr.size() > 1)
+                    pin1 = arr[1];
+                if (arr.size() > 2)
+                    pin2 = arr[2];
+            }
+        }
+        else
+        {
+            if (src.containsKey("pin0"))
+                pin0 = src["pin0"];
+            if (src.containsKey("pin1"))
+                pin1 = src["pin1"];
+            if (src.containsKey("pin2"))
+                pin2 = src["pin2"];
+        }
+
+        if (src.containsKey("mode"))
+        {
+            int v = src["mode"].as<int>();
+            if (v < (int)EmgMode::BendOther)
+                v = (int)EmgMode::BendOther;
+            if (v > (int)EmgMode::Directional)
+                v = (int)EmgMode::Directional;
+            mode = (EmgMode)v;
+        }
+
+        if (src.containsKey("bendFullMoves"))
+        {
+            int v = src["bendFullMoves"].as<int>();
+            if (v < 1)
+                v = 1;
+            if (v > 5)
+                v = 5;
+            bendFullMoves = (uint8_t)v;
+        }
+
+        if (src.containsKey("unfoldFullMoves"))
+        {
+            int v = src["unfoldFullMoves"].as<int>();
+            if (v < 1)
+                v = 1;
+            if (v > 5)
+                v = 5;
+            unfoldFullMoves = (uint8_t)v;
+        }
+
+        if (src.containsKey("minSwitchDelaySec"))
+        {
+            int v = src["minSwitchDelaySec"].as<int>();
+            if (v < 1)
+                v = 1;
+            if (v > 60)
+                v = 60;
+            minSwitchDelaySec = (uint8_t)v;
+        }
+
+        if (src.containsKey("reverseDirection"))
+            reverseDirection = src["reverseDirection"].as<bool>();
+    }
+
+    bool activePinsValid() const
+    {
+        if (channels < 1 || channels > 3)
+            return false;
+
+        const uint8_t pins[3] = {pin0, pin1, pin2};
+        for (uint8_t i = 0; i < channels; ++i)
+        {
+            if (pins[i] == UNUSED_PIN || pins[i] == 0)
+                return false;
+        }
+        return true;
+    }
+};
+
 struct Settings
 {
-    /// FSR
     uint8_t fsrPin = 33;
     uint32_t fsrPullupOhm = 10000;
     float fsrSoftThresholdN = 7.0f;
     float fsrHardMaxN = 10.0f;
 
-    // flex & servo pairs
     FlexSettings flex[NUM_PAIRS];
     ServoSettings servo[NUM_PAIRS];
+    PairInputSettings pairInput[NUM_PAIRS];
+    EmgSettings emg[NUM_PAIRS];
 
-    // Vibro
     uint8_t vibroPin = 5;
     VibroMode vibroMode = VibroMode::Normal;
     uint16_t vibroFreqHz = 150;
@@ -114,26 +285,33 @@ struct Settings
     uint8_t vibroSoftPower = 200;
     uint8_t vibroPulseBase = 120;
 
-    // PIN (0000 = выключен)
     uint16_t pinCode = 0;
 
-    uint32_t settingsVersion = 1;
+    uint32_t settingsVersion = 2;
 
     Settings()
     {
-        // Flex & Servo settings. Pairs 2-4 are inactive by default
         for (int i = 1; i < NUM_PAIRS; ++i)
         {
             flex[i] = FlexSettings{};
             servo[i] = ServoSettings{};
+            pairInput[i] = PairInputSettings{};
+            emg[i] = EmgSettings{};
 
-            flex[i].flexPin = 0xFF;
+            flex[i].flexPin = UNUSED_PIN;
             flex[i].flexPullupOhm = 0;
             flex[i].flexStraightOhm = 0;
             flex[i].flexBendOhm = 0;
             flex[i].flexTolerancePct = 5;
 
-            servo[i].servoPin = 0xFF;
+            servo[i].servoPin = UNUSED_PIN;
+
+            pairInput[i].inputSource = InputSource::Flex;
+
+            emg[i].channels = 1;
+            emg[i].pin0 = UNUSED_PIN;
+            emg[i].pin1 = UNUSED_PIN;
+            emg[i].pin2 = UNUSED_PIN;
         }
     }
 
@@ -141,13 +319,11 @@ struct Settings
     {
         doc.clear();
 
-        // FSR
         doc["fsrPin"] = fsrPin;
         doc["fsrPullupOhm"] = fsrPullupOhm;
         doc["fsrSoftThresholdN"] = fsrSoftThresholdN;
         doc["fsrHardMaxN"] = fsrHardMaxN;
 
-        // flexSettings
         JsonArray flexArr = doc.createNestedArray("flexSettings");
         for (int i = 0; i < NUM_PAIRS; ++i)
         {
@@ -155,7 +331,6 @@ struct Settings
             flex[i].toJson(obj);
         }
 
-        // servoSettings
         JsonArray servoArr = doc.createNestedArray("servoSettings");
         for (int i = 0; i < NUM_PAIRS; ++i)
         {
@@ -163,7 +338,20 @@ struct Settings
             servo[i].toJson(obj);
         }
 
-        // Vibro
+        JsonArray pairInputArr = doc.createNestedArray("pairInputSettings");
+        for (int i = 0; i < NUM_PAIRS; ++i)
+        {
+            JsonObject obj = pairInputArr.createNestedObject();
+            pairInput[i].toJson(obj);
+        }
+
+        JsonArray emgArr = doc.createNestedArray("emgSettings");
+        for (int i = 0; i < NUM_PAIRS; ++i)
+        {
+            JsonObject obj = emgArr.createNestedObject();
+            emg[i].toJson(obj);
+        }
+
         doc["vibroPin"] = vibroPin;
         doc["vibroMode"] = (uint8_t)vibroMode;
         doc["vibroFreqHz"] = vibroFreqHz;
@@ -172,9 +360,7 @@ struct Settings
         doc["vibroSoftPower"] = vibroSoftPower;
         doc["vibroPulseBase"] = vibroPulseBase;
 
-        // PIN
         doc["pinCode"] = pinCode;
-
         doc["settingsVersion"] = settingsVersion;
     }
 
@@ -197,24 +383,24 @@ struct Settings
 
             if (node.is<JsonArrayConst>())
             {
-                JsonArrayConst flexArr = node.as<JsonArrayConst>();
-                for (size_t i = 0; i < NUM_PAIRS && i < flexArr.size(); ++i)
+                JsonArrayConst arr = node.as<JsonArrayConst>();
+                for (size_t i = 0; i < NUM_PAIRS && i < arr.size(); ++i)
                 {
-                    JsonObjectConst obj = flexArr[i];
+                    JsonObjectConst obj = arr[i];
                     if (!obj.isNull())
                         flex[i].applyJson(obj);
                 }
             }
             else if (node.is<const char *>())
             {
-                StaticJsonDocument<512> tmp;
+                StaticJsonDocument<1024> tmp;
                 auto err = deserializeJson(tmp, node.as<const char *>());
                 if (!err && tmp.is<JsonArrayConst>())
                 {
-                    JsonArrayConst flexArr = tmp.as<JsonArrayConst>();
-                    for (size_t i = 0; i < NUM_PAIRS && i < flexArr.size(); ++i)
+                    JsonArrayConst arr = tmp.as<JsonArrayConst>();
+                    for (size_t i = 0; i < NUM_PAIRS && i < arr.size(); ++i)
                     {
-                        JsonObjectConst obj = flexArr[i];
+                        JsonObjectConst obj = arr[i];
                         if (!obj.isNull())
                             flex[i].applyJson(obj);
                     }
@@ -248,24 +434,24 @@ struct Settings
 
             if (node.is<JsonArrayConst>())
             {
-                JsonArrayConst servoArr = node.as<JsonArrayConst>();
-                for (size_t i = 0; i < NUM_PAIRS && i < servoArr.size(); ++i)
+                JsonArrayConst arr = node.as<JsonArrayConst>();
+                for (size_t i = 0; i < NUM_PAIRS && i < arr.size(); ++i)
                 {
-                    JsonObjectConst obj = servoArr[i];
+                    JsonObjectConst obj = arr[i];
                     if (!obj.isNull())
                         servo[i].applyJson(obj);
                 }
             }
             else if (node.is<const char *>())
             {
-                StaticJsonDocument<512> tmp;
+                StaticJsonDocument<1024> tmp;
                 auto err = deserializeJson(tmp, node.as<const char *>());
                 if (!err && tmp.is<JsonArrayConst>())
                 {
-                    JsonArrayConst servoArr = tmp.as<JsonArrayConst>();
-                    for (size_t i = 0; i < NUM_PAIRS && i < servoArr.size(); ++i)
+                    JsonArrayConst arr = tmp.as<JsonArrayConst>();
+                    for (size_t i = 0; i < NUM_PAIRS && i < arr.size(); ++i)
                     {
-                        JsonObjectConst obj = servoArr[i];
+                        JsonObjectConst obj = arr[i];
                         if (!obj.isNull())
                             servo[i].applyJson(obj);
                     }
@@ -287,6 +473,68 @@ struct Settings
                 servo[0].servoManualDeg = doc["servoManualDeg"];
             if (doc.containsKey("servoMaxSpeedDegPerSec"))
                 servo[0].servoMaxSpeedDegPerSec = doc["servoMaxSpeedDegPerSec"];
+        }
+
+        if (doc.containsKey("pairInputSettings"))
+        {
+            JsonVariantConst node = doc["pairInputSettings"];
+
+            if (node.is<JsonArrayConst>())
+            {
+                JsonArrayConst arr = node.as<JsonArrayConst>();
+                for (size_t i = 0; i < NUM_PAIRS && i < arr.size(); ++i)
+                {
+                    JsonObjectConst obj = arr[i];
+                    if (!obj.isNull())
+                        pairInput[i].applyJson(obj);
+                }
+            }
+            else if (node.is<const char *>())
+            {
+                StaticJsonDocument<512> tmp;
+                auto err = deserializeJson(tmp, node.as<const char *>());
+                if (!err && tmp.is<JsonArrayConst>())
+                {
+                    JsonArrayConst arr = tmp.as<JsonArrayConst>();
+                    for (size_t i = 0; i < NUM_PAIRS && i < arr.size(); ++i)
+                    {
+                        JsonObjectConst obj = arr[i];
+                        if (!obj.isNull())
+                            pairInput[i].applyJson(obj);
+                    }
+                }
+            }
+        }
+
+        if (doc.containsKey("emgSettings"))
+        {
+            JsonVariantConst node = doc["emgSettings"];
+
+            if (node.is<JsonArrayConst>())
+            {
+                JsonArrayConst arr = node.as<JsonArrayConst>();
+                for (size_t i = 0; i < NUM_PAIRS && i < arr.size(); ++i)
+                {
+                    JsonObjectConst obj = arr[i];
+                    if (!obj.isNull())
+                        emg[i].applyJson(obj);
+                }
+            }
+            else if (node.is<const char *>())
+            {
+                StaticJsonDocument<1024> tmp;
+                auto err = deserializeJson(tmp, node.as<const char *>());
+                if (!err && tmp.is<JsonArrayConst>())
+                {
+                    JsonArrayConst arr = tmp.as<JsonArrayConst>();
+                    for (size_t i = 0; i < NUM_PAIRS && i < arr.size(); ++i)
+                    {
+                        JsonObjectConst obj = arr[i];
+                        if (!obj.isNull())
+                            emg[i].applyJson(obj);
+                    }
+                }
+            }
         }
 
         if (doc.containsKey("vibroPin"))
