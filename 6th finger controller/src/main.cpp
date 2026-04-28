@@ -1,12 +1,15 @@
+// Firmware entry point.
 #include <Arduino.h>
 #include <ESP32Servo.h>
 
-#include "settings.h"
-#include "control.h"
-#include "ble_app.h"
+#include "config/settings.h"
+#include "control/control.h"
+#include "ble/ble_app.h"
 
 BleApp ble;
 Control ctrl;
+// Limits how often the main loop snapshots telemetry for BLE transmission.
+static uint32_t g_lastTelePushMs = 0;
 
 static void onSettingsChanged(const Settings &s)
 {
@@ -38,12 +41,17 @@ void setup()
     Serial.println("System ready.");
 }
 
+// Run one control iteration, throttle telemetry generation, and service BLE.
 void loop()
 {
     ctrl.update();
 
-    ble.sendTelemetry(ctrl.getTelemetry());
-    ble.loop();
+    const uint32_t nowMs = millis();
+    if (nowMs - g_lastTelePushMs >= 100)
+    {
+        g_lastTelePushMs = nowMs;
+        ble.sendTelemetry(ctrl.getTelemetry());
+    }
 
-    delay(50);
+    ble.loop();
 }
