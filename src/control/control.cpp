@@ -80,15 +80,15 @@ static int analogReadMock(uint8_t pin)
 
 namespace
 {
-// Small float clamp helper used by the conversion routines in this file.
-float clampf(float v, float a, float b)
-{
-    if (v < a)
-        return a;
-    if (v > b)
-        return b;
-    return v;
-}
+    // Small float clamp helper used by the conversion routines in this file.
+    float clampf(float v, float a, float b)
+    {
+        if (v < a)
+            return a;
+        if (v > b)
+            return b;
+        return v;
+    }
 }
 
 // Bridge Control::readAdcAvgStable into the function-pointer API expected by EMG.

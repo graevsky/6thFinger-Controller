@@ -20,29 +20,29 @@ void Control::pushFlexHistory(int idx, float v)
 
 namespace
 {
-// Tiny insertion-sort median for the fixed-size flex history window.
-float medianOfSmall(const float *arr, int n)
-{
-    float tmp[5];
-    for (int i = 0; i < n; ++i)
-        tmp[i] = arr[i];
-
-    for (int i = 1; i < n; ++i)
+    // Tiny insertion-sort median for the fixed-size flex history window.
+    float medianOfSmall(const float *arr, int n)
     {
-        float key = tmp[i];
-        int j = i - 1;
-        while (j >= 0 && tmp[j] > key)
-        {
-            tmp[j + 1] = tmp[j];
-            j--;
-        }
-        tmp[j + 1] = key;
-    }
+        float tmp[5];
+        for (int i = 0; i < n; ++i)
+            tmp[i] = arr[i];
 
-    if (n <= 0)
-        return 0.0f;
-    return tmp[n / 2];
-}
+        for (int i = 1; i < n; ++i)
+        {
+            float key = tmp[i];
+            int j = i - 1;
+            while (j >= 0 && tmp[j] > key)
+            {
+                tmp[j + 1] = tmp[j];
+                j--;
+            }
+            tmp[j + 1] = key;
+        }
+
+        if (n <= 0)
+            return 0.0f;
+        return tmp[n / 2];
+    }
 }
 
 // Compute the current flex history median for outlier rejection.
