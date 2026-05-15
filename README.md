@@ -14,6 +14,18 @@ The firmware is built around 5 logical finger pairs. Each pair can be configured
 
 ---
 
+### Documentation
+
+- Landing page: [prothesis.ru](https://prothesis.ru)
+- Controller guide: [Open controller and assembly guide](https://drive.google.com/file/d/1TqZTdqmVpPDhjSL2WnfT9wohUkeKcAlp/view?usp=sharing)
+- Android app guide: [Open application guide](https://drive.google.com/file/d/1A2usxykovqEe099k2ItJ9acGboUhyZ13/view?usp=sharing)
+- Backend guide: [Open backend guide](https://drive.google.com/file/d/1RrIl7wzfEjwOqdwEEhMq3LTtUpla6rIw/view?usp=sharing)
+- 3D model package: [Open STL and STEP package](https://drive.google.com/drive/folders/1bwpGPP83HMJFmotW1bT_C9SNT2XIXNeM?usp=sharing)
+- Android app repository: [graevsky/6thFinger-App](https://github.com/graevsky/6thFinger-App)
+- Backend repository: [graevsky/6thFinger-Backend](https://github.com/graevsky/6thFinger-Backend)
+
+---
+
 ### Features
 
 - per-pair input selection: `Flex` or `EMG`
@@ -90,7 +102,7 @@ Main hardware-side components expected by the firmware:
 You can build and flash the firmware with PlatformIO.
 
 1. Install PlatformIO CLI or use the PlatformIO VS Code extension.
-2. Connect an ESP32 board .
+2. Connect an ESP32 board.
 3. Build the project: `pio run`
 4. Upload the firmware: `pio run -t upload`
 5. Open the serial monitor: `pio device monitor -b 115200`
@@ -117,6 +129,18 @@ Notes:
 Это прошивка для `ESP32`, предназначенная для контроллера протеза пальца. Она считывает flex- и EMG-входы, управляет сервоприводами, оценивает силу контакта по FSR-датчику и обменивается настройками и телеметрией с мобильным приложением по BLE.
 
 Прошивка поддерживает до 5 пар датчик-сервопривод (т. е. до 5 пальцев). Каждая пара настраивается независимо и может использовать либо flex-сенсор, либо одноканальный EMG-вход как источник движения.
+
+---
+
+### Документация
+
+- Лендинг: [prothesis.ru](https://prothesis.ru)
+- Гайд по протезу: [Открыть гайд](https://drive.google.com/file/d/1TqZTdqmVpPDhjSL2WnfT9wohUkeKcAlp/view?usp=sharing)
+- Гайд по приложению: [Открыть гайд](https://drive.google.com/file/d/1A2usxykovqEe099k2ItJ9acGboUhyZ13/view?usp=sharing)
+- Гайд по backend: [Открыть гайд](https://drive.google.com/file/d/1RrIl7wzfEjwOqdwEEhMq3LTtUpla6rIw/view?usp=sharing)
+- 3D-модели: [Открыть STL и STEP](https://drive.google.com/drive/folders/1bwpGPP83HMJFmotW1bT_C9SNT2XIXNeM?usp=sharing)
+- Репозиторий приложения: [graevsky/6thFinger-App](https://github.com/graevsky/6thFinger-App)
+- Репозиторий backend: [graevsky/6thFinger-Backend](https://github.com/graevsky/6thFinger-Backend)
 
 ---
 
@@ -160,7 +184,7 @@ Notes:
 - `include/realtime_1ch_binary_model.h` - 1-канальная бинарная EMG-модель и функции инференса
 - `platformio.ini` - зависимости и настройки
 
-Краткий runtime flow:\
+Краткий runtime flow:
 
 1. `main.cpp` поднимает serial, BLE и control-подсистему.
 2. `BleApp` восстанавливает настройки из `NVS` и поднимает BLE-сервис.
@@ -211,4 +235,5 @@ Notes:
 ### Текущие ограничения
 
 - BLE-payload используют chunked transport с framing вида `[BEGIN] ... [END]`
+- сейчас интегрирована только сгенерированная одноканальная бинарная realtime EMG-модель
 - поведение в реальной среде зависит от корректной настройки пинов и датчиков
