@@ -7,7 +7,7 @@
 // ================= FLEX ADC MOCK =================
 // Development-only flex mock. It emulates one flex sensor by synthesizing a
 // resistance curve and then converting it back to the ADC domain.
-#define ENABLE_FLEX_ADC_MOCK 1
+#define ENABLE_FLEX_ADC_MOCK 0
 
 #if ENABLE_FLEX_ADC_MOCK
 static constexpr uint8_t MOCK_FLEX_PIN = 32;
