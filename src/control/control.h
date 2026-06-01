@@ -43,7 +43,7 @@ private:
     float flexFiltered[NUM_PAIRS] = {};
     float fsrFiltered = 0.0f;
 
-    // Latest raw sensor values kept for telemetry and filtering.
+    // Latest measured sensor values kept for telemetry.
     float flexRaw[NUM_PAIRS] = {};
     float fsrRaw = 0.0f;
 

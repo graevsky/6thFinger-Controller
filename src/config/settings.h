@@ -7,7 +7,7 @@ struct Settings
     static constexpr uint32_t kSettingsVersion = 6;
 
     // Shared FSR configuration used for vibro force feedback.
-    uint8_t fsrPin = 33;
+    uint8_t fsrPin = 35;
     uint32_t fsrPullupOhm = 10000;
     float fsrSoftThresholdN = 7.0f;
     float fsrHardMaxN = 10.0f;

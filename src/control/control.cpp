@@ -263,14 +263,24 @@ void Control::updateFlexInput(int idx)
     const bool mockActive = false;
 #endif
 
-    float rNew = readResistanceStable(fCfg.flexPin, fCfg.flexPullupOhm, FLEX_SAMPLES);
+    const float rMeasured = readResistanceStable(fCfg.flexPin,
+                                                 fCfg.flexPullupOhm,
+                                                 FLEX_SAMPLES);
+    float rNew = rMeasured;
 
     if (!mockActive)
     {
         const float st = (float)fCfg.flexStraightOhm;
         const float bd = (float)fCfg.flexBendOhm;
-        const float lo = fminf(st, bd) * 0.40f;
-        const float hi = fmaxf(st, bd) * 2.50f;
+        // Keep the guardrails wide enough so an uncalibrated but otherwise
+        // healthy flex sensor still reports live data instead of snapping back
+        // to the default 65k straight value.
+        float lo = fminf(st, bd) * 0.10f;
+        float hi = fmaxf(st, bd) * 10.0f;
+        if (lo < 500.0f)
+            lo = 500.0f;
+        if (hi < 3000000.0f)
+            hi = 3000000.0f;
 
         // Reject obviously broken samples so EMI or ADC glitches do not jerk the servo.
         if (!isfinite(rNew) || rNew < lo || rNew > hi)
@@ -360,7 +370,7 @@ void Control::updateFlexInput(int idx)
     }
 
     flexFiltered[idx] = flexStableOhm[idx];
-    flexRaw[idx] = rNew;
+    flexRaw[idx] = rMeasured;
 
     tele.flexRawOhm[idx] = sanitizeResistanceForTelemetry(flexRaw[idx]);
     tele.flexFilteredOhm[idx] = sanitizeResistanceForTelemetry(flexFiltered[idx]);

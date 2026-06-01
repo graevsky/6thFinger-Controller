@@ -46,7 +46,7 @@ enum class EmgAction : uint8_t
 // Configuration for one flex sensor channel.
 struct FlexSettings
 {
-    uint8_t flexPin = 32;
+    uint8_t flexPin = 33;
     uint32_t flexPullupOhm = 47000;
     uint32_t flexStraightOhm = 65000;
     uint32_t flexBendOhm = 160000;
